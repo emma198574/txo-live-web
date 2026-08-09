@@ -1,0 +1,78 @@
+name: 那斯達克選擇權T字報價
+
+# 只有手動觸發，沒有排程。
+#   CBOE 的免費報價本來就延遲 15 分鐘，而美股盤對應台北時間 21:30–次日 04:00，
+#   多半在睡覺，排程一直更新的價值低。要看的時候到 Actions 按 Run，
+#   「同時推播」預設已勾，推播會直接進 iPhone。
+#
+# 發佈路徑：public/ndx/index.html → gh-pages 的 ndx/ → https://txo-live.pages.dev/ndx/
+#   和台指那頁共用同一個 Cloudflare Pages 專案（同一個 gh-pages 分支），
+#   所以推之前一定要先把分支現有內容抓下來當底、只覆蓋自己那一份，
+#   否則單一 commit 的強制覆蓋會把台指的 index.html 一起洗掉。
+on:
+  workflow_dispatch:
+    inputs:
+      notify:
+        description: '同時推播摘要到 iPhone (ntfy)'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+# 與台指共用同一組，避免兩支 workflow 同時強制推 gh-pages 打架。
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 安裝套件
+        run: pip install requests
+
+      - name: 產生 NDX T 字報價網頁
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          # 推播點擊要開的網址；子路徑跟台指不同，直接寫死不共用 vars.PAGE_URL。
+          PAGE_URL: https://txo-live.pages.dev/ndx/
+        run: |
+          python3 "那斯達克選擇權T字報價.py" \
+            --out public/ndx/index.html \
+            ${{ inputs.notify && '--notify' || '' }}
+
+      - name: 發佈到 gh-pages 分支
+        run: |
+          set -e
+          REPO="https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
+
+          # 先把 gh-pages 現有內容當底，保住台指那頁；分支還不存在時從空目錄開始。
+          if ! git clone -q --depth 1 --branch gh-pages "$REPO" site; then
+            rm -rf site
+            mkdir -p site
+          fi
+          rm -rf site/.git
+
+          # 只覆蓋自己負責的 ndx/
+          mkdir -p site/ndx
+          cp public/ndx/index.html site/ndx/index.html
+          # .nojekyll：不讓 Pages 拿 Jekyll 去處理，純靜態直接上。
+          touch site/.nojekyll
+
+          cd site
+          git init -q
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "更新 NDX T 字報價網頁 $(TZ=Asia/Taipei date '+%Y-%m-%d %H:%M')"
+          # 強制覆蓋成單一 commit：每次都是全新 SHA（Cloudflare 才會重新部署），
+          # 又不會累積歷史把 repo 撐大。
+          git push -q --force "$REPO" HEAD:gh-pages

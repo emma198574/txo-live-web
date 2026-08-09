@@ -59,9 +59,22 @@ jobs:
       - name: 發佈到 gh-pages 分支
         run: |
           set -e
+          REPO="https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
+
+          # 先把 gh-pages 現有內容當底，保住那斯達克那頁（ndx/）；
+          # 分支還不存在時從空目錄開始。
+          if ! git clone -q --depth 1 --branch gh-pages "$REPO" site; then
+            rm -rf site
+            mkdir -p site
+          fi
+          rm -rf site/.git
+
+          # 只覆蓋自己負責的 index.html
+          cp public/index.html site/index.html
           # .nojekyll：不讓 Pages 拿 Jekyll 去處理，純靜態直接上。
-          touch public/.nojekyll
-          cd public
+          touch site/.nojekyll
+
+          cd site
           git init -q
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -69,6 +82,4 @@ jobs:
           git commit -q -m "更新 T 字報價網頁 $(TZ=Asia/Taipei date '+%Y-%m-%d %H:%M')"
           # 強制覆蓋成單一 commit：每次都是全新 SHA（Pages 才會重新建置），
           # 又不會累積歷史把 repo 撐大。
-          git push -q --force \
-            "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" \
-            HEAD:gh-pages
+          git push -q --force "$REPO" HEAD:gh-pages
