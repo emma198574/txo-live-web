@@ -492,9 +492,16 @@ def build_report(gkey, grp, session, under, usrc, tab_id, tab_name, radius=1500)
     calls, puts = grp["C"], grp["P"]
 
     fwd = group_fwd(grp)
+    # 價平只是拿來標熱區，不需要買賣權「成對」才算得出來。
+    # 週五合約冷清（量約週三的 2%），夜盤剛開盤時常常整組找不到任何一個履約價
+    # 兩邊都有成交價；以前這裡直接 raise，害整支程式掛掉、連週三那頁也一起沒了。
+    # 改成：先取成對的（parity 較準），沒有就退到任一邊有價的履約價。
     common = [k for k in calls if k in puts and calls[k]["px"] and puts[k]["px"]]
     if not common:
-        raise ValueError(f"{tab_name}：無有效買賣權對可定價")
+        common = [k for k in set(calls) | set(puts)
+                  if (calls.get(k) or {}).get("px") or (puts.get(k) or {}).get("px")]
+    if not common:
+        raise ValueError(f"{tab_name}：整組無任何成交價可定價")
     atm = min(common, key=lambda k: abs(k - under))
 
     expiry = grp["exp"]
@@ -563,8 +570,17 @@ def build_page(radius=1500):
         if not under:
             raise ValueError("無標的價可用（TXF 與 parity 皆失敗）")
 
-    reps = [build_report(g, v, session, under, usrc, tid, name, radius=radius)
-            for tid, name, g, v in picks]
+    # 一頁做不出來不該拖垮另一頁：週五冷清時整支程式會死，網頁不更新、推播也不發，
+    # 而週三那頁其實資料好好的。改成逐頁隔離，兩頁都失敗才放棄。
+    reps, errs = [], []
+    for tid, name, g, v in picks:
+        try:
+            reps.append(build_report(g, v, session, under, usrc, tid, name, radius=radius))
+        except Exception as e:
+            errs.append(f"{name}：{e}")
+            print(f"  ⚠ 略過分頁 {name}：{e}")
+    if not reps:
+        raise ValueError("兩個分頁都無法產生（" + "；".join(errs) + "）")
     return {
         "session": session, "under": under, "usrc": usrc, "reps": reps,
         "now": datetime.now(TW_TZ).strftime("%Y-%m-%d %H:%M:%S"),
@@ -1072,8 +1088,14 @@ def push_ntfy(page, page_url=None):
     if page_url:
         headers["Click"] = page_url
     try:
-        requests.post(f"https://ntfy.sh/{topic}", data=body.encode("utf-8"), headers=headers, timeout=10)
-        print("  ✓ ntfy 推播成功")
+        # 一定要看狀態碼。以前只送不看，ntfy 回 4xx/5xx（topic 打錯、被限流）
+        # 也照印「推播成功」，手機收不到卻完全查不出來。
+        r = requests.post(f"https://ntfy.sh/{topic}", data=body.encode("utf-8"),
+                          headers=headers, timeout=10)
+        if r.status_code >= 400:
+            print(f"  ⚠ ntfy 推播失敗：HTTP {r.status_code} {r.text[:200]}")
+        else:
+            print("  ✓ ntfy 推播成功")
     except Exception as e:
         print(f"  ⚠ ntfy 推播失敗：{e}")
 
