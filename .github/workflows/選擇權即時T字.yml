@@ -49,6 +49,25 @@ jobs:
       - name: 安裝套件
         run: pip install requests
 
+      - name: 取回 gh-pages 現有內容（含四象限歷史）
+        run: |
+          set -e
+          REPO="https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
+          # runner 每次都是全新的，歷史檔不先取回就等於每跑一次被清空一次。
+          # 順便把 site/ 準備好，發佈步驟直接沿用，不必再 clone 一次。
+          if ! git clone -q --depth 1 --branch gh-pages "$REPO" site; then
+            rm -rf site
+            mkdir -p site
+          fi
+          rm -rf site/.git
+          mkdir -p public
+          if [ -f "site/莊家意圖歷史.csv" ]; then
+            cp "site/莊家意圖歷史.csv" public/
+            echo "已取回四象限歷史 $(wc -l < 'public/莊家意圖歷史.csv') 行"
+          else
+            echo "gh-pages 上尚無歷史檔，這次新建"
+          fi
+
       - name: 產生即時 T 字報價網頁
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
@@ -61,16 +80,13 @@ jobs:
           set -e
           REPO="https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
 
-          # 先把 gh-pages 現有內容當底，保住那斯達克那頁（ndx/）；
-          # 分支還不存在時從空目錄開始。
-          if ! git clone -q --depth 1 --branch gh-pages "$REPO" site; then
-            rm -rf site
-            mkdir -p site
-          fi
-          rm -rf site/.git
-
-          # 只覆蓋自己負責的 index.html
+          # site/ 已在「取回 gh-pages 現有內容」那步備好（那斯達克的 ndx/ 也在裡面），
+          # 這裡只覆蓋自己負責的檔案。
           cp public/index.html site/index.html
+          # 四象限歷史：追加後寫回，累積樣本用。寫入失敗時不擋網頁發佈。
+          if [ -f "public/莊家意圖歷史.csv" ]; then
+            cp "public/莊家意圖歷史.csv" "site/莊家意圖歷史.csv"
+          fi
           # .nojekyll：不讓 Pages 拿 Jekyll 去處理，純靜態直接上。
           touch site/.nojekyll
 

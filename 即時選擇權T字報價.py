@@ -386,6 +386,9 @@ def add_excess(rows, under, is_call):
         r["tag"] = ""
         r.setdefault("excess", None)
         r.setdefault("grp", "")
+        r.setdefault("core", False)      # 量夠大、有資格被判定的檔
+        r.setdefault("scale", None)      # 該組的顯著門檻（單檔用）
+        r.setdefault("mad", None)        # 該組的原始離散度，側分數的門檻要用它
     if not live:
         return
 
@@ -403,12 +406,15 @@ def add_excess(rows, under, is_call):
         if len(core) < MIN_GROUP_N:
             continue
         med = _median([r["rate"] for r in core])
-        scale = max((_median([abs(r["rate"] - med) for r in core]) or 1.0) * EXCESS_K,
-                    MIN_EXCESS_PT)
+        mad = _median([abs(r["rate"] - med) for r in core]) or 1.0
+        scale = max(mad * EXCESS_K, MIN_EXCESS_PT)
         for r in grp:                      # 超額全組都算，冷門檔也看得到自己的位置
             r["excess"] = r["rate"] - med
             r["grp"] = g
+            r["scale"] = scale
+            r["mad"] = mad
         for r in core:                     # 但只有量夠大的才下買賣方判定
+            r["core"] = True
             if r["excess"] <= -scale:
                 r["tag"] = "sell"    # 相對同儕被壓 → 賣方築牆
             elif r["excess"] >= scale:
@@ -435,6 +441,139 @@ MIN_EXCESS_PT = 5.0
 
 # 單一履約價要被判買賣方，至少要有的成交口數（絕對下限）
 MIN_TAG_VOL = 50
+
+
+# ── 4.5 莊家意圖：把兩側壓成四象限 ───────────────────────────────────────────
+#
+# 側分數的顯著門檻。關鍵是它不能直接沿用單檔的 scale ——
+# 側分數是幾十檔的加權平均，平均會把離散度壓掉 √N_eff 倍，
+# 拿單檔的尺去量平均值等於要求 4σ 以上，卡片會整天卡在「觀望」。
+# 正確的尺是加權平均自己的標準誤：MAD × √Σw²（w = 各檔的成交量佔比）。
+# Σw² 的倒數就是有效樣本數，量能越集中在少數履約價，門檻自動放寬 ——
+# 這正好對應「錢押得越集中，訊號越該被採信」。
+SIDE_GATE_K  = 2.0
+MIN_SIDE_PT  = 2.0
+# 一側價外核心檔合計低於此口數就不判定（與撐壓卡同一把尺）
+MIN_SIDE_VOL    = MIN_ZONE_VOL
+
+
+def side_stance(rows, under):
+    """
+    把一側的價外檔位壓成一個「今天誰主導」的分數：量加權超額。
+
+    為什麼一定要「量加權」而不是平均：excess 是扣掉同組中位數算出來的，
+    等權平均必然≈0 —— 中位數的定義就保證一半在上、一半在下，
+    拿等權平均當側分數等於在看雜訊。量加權問的是完全不同的問題：
+    **今天的錢押在被壓的檔，還是被追的檔**。
+      · 錢集中在超額為負的履約價 → 賣方主導（買權側=SC、賣權側=SP）
+      · 錢集中在超額為正的履約價 → 買方主導（買權側=BC、賣權側=BP）
+
+    只取價外：價內權利金主要跟著內含價值走，%變動不反映誰在出手；
+    而且對台指方向判讀有意義的牆本來就都在價外。
+
+    只取 core（量 ≥ 門檻）：冷門檔報價更新慢，超額是陳舊值，
+    納進來只會把分數往雜訊拉。判定對象與基準必須是同一批，理由同 add_excess。
+
+    門檻不是固定值，是這個加權平均自己的標準誤 ×2（見 SIDE_GATE_K 上方說明）。
+    """
+    core = [r for r in rows.values()
+            if r.get("core") and r.get("grp") == "otm" and r.get("excess") is not None]
+    vol  = sum(r["vol"] for r in core)
+    if len(core) < MIN_GROUP_N or vol < MIN_SIDE_VOL:
+        return {"score": None, "stance": None, "vol": vol, "n": len(core), "top": None}
+    score = sum(r["vol"] * r["excess"] for r in core) / vol
+    mad   = _median([r["mad"] for r in core if r["mad"]]) or 1.0
+    sew   = mad * (sum((r["vol"] / vol) ** 2 for r in core) ** 0.5)   # 加權平均的標準誤
+    gate  = max(SIDE_GATE_K * sew, MIN_SIDE_PT)
+    stance = "buy" if score >= gate else ("sell" if score <= -gate else "")
+    return {"score": score, "stance": stance, "vol": vol, "n": len(core),
+            "top": max(core, key=lambda r: r["vol"])["K"], "gate": gate}
+
+
+# 四腳代號：(側, 主導方) → 代號。買權側被壓＝有人賣買權（SC），依此類推。
+LEG = {("C", "sell"): "SC", ("C", "buy"): "BC",
+       ("P", "sell"): "SP", ("P", "buy"): "BP"}
+LEG_TXT = {"SC": "賣方蓋天花板", "BC": "買方賭突破",
+           "SP": "賣方不怕跌",   "BP": "有人買保險"}
+
+# 四象限：(買權側主導, 賣權側主導) → (代號, 標題, 台指怎麼做)
+QUAD = {
+    ("sell", "sell"): ("range", "區間盤",
+        "賣方兩面收租，上下都守得住。台指在上下緣之間逆勢做 —— "
+        "碰上緣偏空、碰下緣偏多，不追中間。"),
+    ("buy", "sell"): ("bull", "偏多",
+        "上方被追價、下方賣方不怕跌，四種裡最順的多方盤。"
+        "台指拉回下緣找多，不要追高。"),
+    ("sell", "buy"): ("bear", "偏空",
+        "上方被蓋死、下方有人買保險。台指反彈到上緣找空，不要接刀。"),
+    ("buy", "buy"): ("vol", "待變盤",
+        "兩側都是買方 —— 在買波動不是買方向，市場自己也不知道要往哪。"
+        "不要做區間，等突破上下緣任一端再順勢進場。"),
+}
+
+
+def build_mind(crows, prows, under, zone):
+    """
+    莊家意圖卡：兩側的量加權超額 → 四象限 → 台指的方向、區間與失效條件。
+
+    這張卡是給「只做台指、不做選擇權」的人用的：選擇權的四個腳
+    （BC/SC/BP/SP）在這裡不是要你去下單，是拿來反推莊家把牆蓋在哪、
+    哪一面願意扛。綠底（賣方築牆）比較接近法人立場，粉底（買方追價）
+    散戶成分高，所以「牆在不在」比「誰在追」更值得當方向依據。
+
+    刻意保留「觀望」這個結果：有一側沒表態時不硬湊象限。
+    沒有訊號本來就是一種訊號，硬給結論才是虧錢的來源。
+    """
+    c = side_stance(crows, under)
+    p = side_stance(prows, under)
+
+    # 上下緣優先用盤中成交口數重心（今天的戰場），沒有才退回昨日 OI 牆（結構）
+    hi = zone.get("res_k") or zone.get("c_wall")
+    lo = zone.get("sup_k") or zone.get("p_wall")
+    hi_src = "盤中" if zone.get("res_k") else ("昨日OI" if zone.get("c_wall") else None)
+    lo_src = "盤中" if zone.get("sup_k") else ("昨日OI" if zone.get("p_wall") else None)
+
+    def kx(v):
+        return f"{v:,}" if v else "—"
+
+    q = QUAD.get((c["stance"], p["stance"]))
+    if q:
+        code, title, how = q
+        if code == "range":
+            bad = (f'上緣 {kx(hi)} 站上或下緣 {kx(lo)} 失守，'
+                   f'且該側由綠翻粉（賣方棄守）→ 停掉逆勢單改順勢。')
+        elif code == "bull":
+            bad = f'下緣 {kx(lo)} 失守，或上方買權由粉翻綠（追價的人退了）。'
+        elif code == "bear":
+            bad = f'上緣 {kx(hi)} 站上，或下方賣權由粉翻綠（買保險的人退了）。'
+        else:
+            bad = f'站上 {kx(hi)} 做多、跌破 {kx(lo)} 做空；在區間內不進場。'
+    else:
+        code, title = "flat", "觀望"
+        reason = []
+        if c["stance"] is None: reason.append("買權側量能／樣本不足")
+        elif not c["stance"]:   reason.append("買權側中性")
+        if p["stance"] is None: reason.append("賣權側量能／樣本不足")
+        elif not p["stance"]:   reason.append("賣權側中性")
+        how = (f'{"、".join(reason)}，四象限不成立。'
+               '莊家今天沒有表態，這種盤最容易兩面被巴 —— 先不做。')
+        bad = "等任一側出現明確的綠（築牆）或粉（追價）再看。"
+
+    # 牆的位移是獨立於超額的第二個維度：陣地往哪邊挪，代表結構在往哪邊讓
+    shifts = []
+    for sh, up, dn in ((zone.get("res_shift"), "買權陣地上移", "買權陣地下移"),
+                       (zone.get("sup_shift"), "支撐上移", "支撐下移")):
+        if sh is not None and abs(sh) > 100:
+            shifts.append(f'{up if sh > 0 else dn} {abs(sh):,} 點'
+                          f'（偏{"多" if sh > 0 else "空"}）')
+
+    return {
+        "code": code, "title": title, "how": how, "bad": bad,
+        "c": c, "p": p, "hi": hi, "lo": lo, "hi_src": hi_src, "lo_src": lo_src,
+        "c_leg": LEG.get(("C", c["stance"])) if c["stance"] else None,
+        "p_leg": LEG.get(("P", p["stance"])) if p["stance"] else None,
+        "shifts": shifts,
+    }
 
 
 def build_zone(crows, prows, under, oi, lo, hi, top=3):
@@ -526,6 +665,7 @@ def build_report(gkey, grp, session, under, usrc, tab_id, tab_name, radius=1500)
     add_excess(crows, under, True)
     add_excess(prows, under, False)
     zone = build_zone(crows, prows, under, oi, lo, hi)
+    mind = build_mind(crows, prows, under, zone)
 
     # MIS CTime 例 213907 → 21:39:07；非今日的資料把日期一起標出來，
     # 免得像 07/31 早上那次：產生時間是今天早上、行情時間卻是昨晚而看不出來。
@@ -542,7 +682,7 @@ def build_report(gkey, grp, session, under, usrc, tab_id, tab_name, radius=1500)
         "under": under, "usrc": usrc, "atm": atm, "fwd": fwd,
         "strikes": strikes, "crows": crows, "prows": prows,
         "oi": oi, "time": tstr, "stale": stale, "expiry": expiry,
-        "vol": grp["vol"], "zone": zone,
+        "vol": grp["vol"], "zone": zone, "mind": mind,
     }
 
 
@@ -673,8 +813,12 @@ DELTA_JS = """
   if(!el || !wrap) return;
   var epoch = parseInt(wrap.getAttribute('data-epoch') || '0', 10);
   if(!epoch) return;
+  // 莊家意圖卡跟資料年齡綁在一起：表格慢 15 分鐘還能看，方向判讀慢 15 分鐘
+  // 會害人做反，所以過期就整張轉灰、蓋上警語，不留一個看起來很篤定的結論。
+  var minds = [].slice.call(document.querySelectorAll('.mind'));
   function tick(){
     var sec = Math.max(0, Math.floor(Date.now()/1000) - epoch);
+    minds.forEach(function(m){ m.classList.toggle('expired', sec >= 900); });
     var txt;
     if(sec < 60)            txt = sec + ' 秒前';
     else if(sec < 3600)     txt = Math.floor(sec/60) + ' 分鐘前';
@@ -710,6 +854,51 @@ def chg_td(r):
     tip = (f'今日 {rate:+.0f}%，對照{g}同儕超額 {ex:+.0f}pt → {TAG_TXT[tag]}'
            if ex is not None else f'今日 {rate:+.0f}%（樣本不足或無成交，不判定）')
     return f'<td class="chg {tag}" title="{tip}">{rate:+.0f}%</td>'
+
+
+def render_mind(rep):
+    """莊家意圖卡：兩腳判定 → 四象限結論 → 台指區間與失效條件。
+
+    資料一過期整張卡就會被 JS 加上 .expired 轉灰並蓋上警語（見 AGE_JS）。
+    表格慢 15 分鐘還能看，方向判讀慢 15 分鐘會害人做反 —— 兩者不該同樣對待。
+    """
+    m = rep["mind"]
+    if not m:
+        return ""
+
+    def leg(side, st, label):
+        if st["stance"] is None:
+            body = f'<span class="lgn">量能／樣本不足（{st["vol"]:,} 口 / {st["n"]} 檔），不判定</span>'
+        elif not st["stance"]:
+            body = (f'<b class="mid">中性</b>'
+                    f'<span class="lgn">{st["score"]:+.1f}pt，未達 ±{st["gate"]:.1f} 門檻</span>')
+        else:
+            code = LEG[(side, st["stance"])]
+            body = (f'<b class="{st["stance"]}">{code}</b>'
+                    f'<span class="lgd">{LEG_TXT[code]}</span>'
+                    f'<span class="lgn">{st["score"]:+.1f}pt・最大量 {st["top"]:,}</span>')
+        return f'<div class="leg"><span class="lgl">{label}</span>{body}</div>'
+
+    def kx(v, src):
+        return f'{v:,}<small>{src}</small>' if v else "—"
+
+    rng = ""
+    if m["hi"] or m["lo"]:
+        rng = (f'<div class="mrange">台指參考區間　'
+               f'<b>{kx(m["lo"], m["lo_src"])}</b> ～ <b>{kx(m["hi"], m["hi_src"])}</b></div>')
+    shift = (f'<div class="mshift">{"　·　".join(m["shifts"])}</div>') if m["shifts"] else ""
+
+    return f'''<div class="mind {m["code"]}">
+  <div class="mh">莊家意圖<span class="mq">{m["title"]}</span></div>
+  <div class="mlegs">
+    {leg("C", m["c"], "標的之上・買權")}
+    {leg("P", m["p"], "標的之下・賣權")}
+  </div>
+  <div class="mhow">{m["how"]}</div>
+  {rng}{shift}
+  <div class="mnote">失效條件：{m["bad"]}</div>
+  <div class="mexp">⚠ 資料已超過 15 分鐘，方向判讀不可用 —— 到 Actions 手動 Run 一次再看</div>
+</div>'''
 
 
 def render_zone(rep):
@@ -854,6 +1043,7 @@ def render_panel(rep):
   <div class="kpi"><div class="l">P/C 未平倉比</div><div class="v">{pcr_oi_kpi}</div></div>
   <div class="kpi"><div class="l">價平</div><div class="v">{rep["atm"]:,}</div></div>
 </div>
+{render_mind(rep)}
 {render_zone(rep)}
 <div class="tblwrap">
 <table>
@@ -947,6 +1137,35 @@ h1{{font-size:20px;margin:0 0 4px;font-weight:700;letter-spacing:.3px}}
 .kpi .l{{font-size:10.5px;color:var(--muted);letter-spacing:.4px;margin-bottom:4px}}
 .kpi .v{{font-size:18px;font-weight:700}} .kpi .v small{{font-size:11px;font-weight:500;color:var(--muted)}}
 .kpi.call .v{{color:var(--call)}} .kpi.put .v{{color:var(--put)}}
+/* 莊家意圖卡：四象限結論。過期時整張轉灰並蓋警語，見 AGE_JS */
+.mind{{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--muted);
+  border-radius:10px;padding:12px 14px;margin:0 0 10px}}
+.mind.bull{{border-left-color:var(--call)}} .mind.bear{{border-left-color:var(--put)}}
+.mind.range,.mind.vol{{border-left-color:#d8b24a}}
+.mh{{font-size:12px;font-weight:700;color:var(--muted);letter-spacing:.4px}}
+.mq{{color:var(--ink);font-size:16px;margin-left:9px;letter-spacing:0}}
+.mind.bull .mq{{color:var(--call)}} .mind.bear .mq{{color:var(--put)}}
+.mind.range .mq,.mind.vol .mq{{color:#c99a1e}}
+.mlegs{{display:grid;grid-template-columns:1fr 1fr;gap:6px 14px;margin:9px 0 8px}}
+@media(max-width:640px){{.mlegs{{grid-template-columns:1fr}}}}
+.leg{{display:flex;align-items:baseline;gap:7px;font-size:12px;flex-wrap:wrap}}
+.lgl{{color:var(--muted);font-size:10.5px;min-width:88px}}
+.leg b{{font-size:13px;font-weight:800;letter-spacing:.5px}}
+.leg b.sell{{color:var(--put)}} .leg b.buy{{color:var(--call)}} .leg b.mid{{color:var(--muted)}}
+.lgd{{font-size:11.5px}} .lgn{{color:var(--muted);font-size:10.5px}}
+.mhow{{font-size:12.5px;line-height:1.7;padding-top:8px;border-top:1px solid var(--hair)}}
+.mrange{{font-size:12.5px;margin-top:7px}} .mrange b{{font-size:15px}}
+.mrange small{{font-size:9.5px;color:var(--muted);font-weight:500;margin-left:3px}}
+.mshift{{font-size:11px;color:var(--muted);margin-top:5px}}
+.mnote{{color:var(--muted);font-size:10.5px;margin-top:8px;padding-top:7px;
+  border-top:1px solid var(--hair);line-height:1.6}}
+.mexp{{display:none;font-size:11.5px;font-weight:700;color:#ff6a5c;
+  margin-top:8px;padding-top:7px;border-top:1px solid var(--hair)}}
+.mind.expired{{border-left-color:var(--muted)!important}}
+.mind.expired .mlegs,.mind.expired .mhow,.mind.expired .mrange,
+.mind.expired .mshift,.mind.expired .mnote,.mind.expired .mq{{
+  filter:grayscale(1);opacity:.32}}
+.mind.expired .mexp{{display:block}}
 .zones{{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin:0 0 14px}}
 @media(max-width:640px){{.zones{{grid-template-columns:1fr}}}}
 .zone{{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:11px 13px}}
@@ -1021,6 +1240,13 @@ thead th{{position:sticky;top:0;background:var(--panel);color:var(--muted);font-
   本表扣掉<b>同側所有履約價漲跌%的中位數</b>，剩下的「超額」才是這一檔相對同儕的異常強弱：
   跌得比同儕兇（綠）＝有人壓價收租，牆較硬；漲得比同儕兇（紅）＝有人追價，該價位可能被挑戰。
   顯著門檻用超額絕對值的中位數自適應，不是固定值。<br>
+  <b>莊家意圖（四象限）</b>：給只做台指、不做選擇權的人用。把每一側價外檔位的超額做<b>量加權</b>
+  壓成一個分數 —— 等權平均必然≈0（中位數的定義就保證一半在上一半在下），量加權問的才是
+  「今天的錢押在被壓的檔還是被追的檔」。錢集中在被壓的檔＝賣方主導（買權側 SC、賣權側 SP），
+  集中在被追的檔＝買方主導（BC／BP）。兩側交叉成四象限：SC+SP＝區間盤、BC+SP＝偏多、
+  SC+BP＝偏空、BC+BP＝待變盤（買波動不買方向，等突破）。任一側中性或量能不足就顯示<b>觀望</b>，
+  不硬湊結論。上下緣優先取盤中口數重心，沒有才退回昨日 OI 牆。
+  <b>資料超過 15 分鐘整張卡會轉灰停用</b>，因為方向判讀對新鮮度的要求比表格高得多。<br>
   <b>牆在移動</b>：卡片下緣比對盤中金額重心與昨日 OI 牆。兩者背離超過 100 點，代表今天的資金押在別的價位，
   昨日那道支撐壓力已經不是同一個位置。<br>
   <b>分頁</b>：兩個分頁是不同結算日的合約（週三＝W 系列或月選、週五＝F 系列），
@@ -1100,6 +1326,56 @@ def push_ntfy(page, page_url=None):
         print(f"  ⚠ ntfy 推播失敗：{e}")
 
 
+# ── 6.5 四象限歷史紀錄 ───────────────────────────────────────────────────────
+#
+# 每次產頁就把每個分頁的結論追加一行。目的只有一個：先累積再驗證。
+# 「四象限能不能預測隔日方向」現在沒有答案，跑滿 30 天有樣本才算得出來 ——
+# 在那之前這張卡是參考，不是加碼部位的理由（發動候選那次的教訓）。
+#
+# 存在 --out 的同一個資料夾（雲端＝public/，會被 workflow 一起發佈到 gh-pages，
+# 所以每次 Actions 跑完不會連同 runner 一起被丟掉）。
+
+HIST_NAME = "莊家意圖歷史.csv"
+HIST_COLS = ["產生時間", "epoch", "時段", "分頁", "到期日", "行情時間", "非今日行情", "標的",
+             "買權側分數", "買權側主導", "買權側口數",
+             "賣權側分數", "賣權側主導", "賣權側口數",
+             "象限", "結論", "上緣", "上緣來源", "下緣", "下緣來源", "陣地位移"]
+
+
+def _stance_txt(side, st):
+    if st["stance"] is None:
+        return "不判定"
+    if not st["stance"]:
+        return "中性"
+    return LEG[(side, st["stance"])]
+
+
+def append_history(page, path):
+    """把這一輪的四象限結論追加進 CSV（每個分頁一行）。"""
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    new = not os.path.exists(path) or os.path.getsize(path) == 0
+    with open(path, "a", encoding="utf-8-sig", newline="") as f:
+        w = csv.writer(f)
+        if new:
+            w.writerow(HIST_COLS)
+        for rep_ in page["reps"]:
+            m = rep_["mind"]
+            c, p = m["c"], m["p"]
+            w.writerow([
+                page["now"], page["epoch"], page["session"], rep_["tab"],
+                rep_["expiry"], rep_["time"], "Y" if rep_["stale"] else "",
+                f'{page["under"]:.0f}',
+                "" if c["score"] is None else f'{c["score"]:.2f}',
+                _stance_txt("C", c), c["vol"],
+                "" if p["score"] is None else f'{p["score"]:.2f}',
+                _stance_txt("P", p), p["vol"],
+                m["code"], m["title"],
+                m["hi"] or "", m["hi_src"] or "", m["lo"] or "", m["lo_src"] or "",
+                "；".join(m["shifts"]),
+            ])
+    print(f"  ✓ 四象限已記錄 {path}")
+
+
 # ── main ─────────────────────────────────────────────────────────────────────
 
 def main():
@@ -1108,6 +1384,11 @@ def main():
                     help="HTML 輸出路徑（預設 public/index.html）")
     ap.add_argument("--radius", type=int, default=1500, help="顯示價平 ±N 點（預設 1500）")
     ap.add_argument("--notify", action="store_true", help="推播摘要到 ntfy")
+    ap.add_argument("--track", action="store_true",
+                    help="順便記錄『今日』欄的粉綠籌碼位置並判斷莊家處境"
+                         "（追蹤_選擇權籌碼區.py；配 --notify 才會推事件）")
+    ap.add_argument("--history", default="",
+                    help=f"四象限歷史 CSV 路徑（預設 <--out 同目錄>/{HIST_NAME}；填 off 不記錄）")
     ap.add_argument("--page-url", default=os.environ.get("PAGE_URL", ""),
                     help="推播點擊要開的網頁網址（GitHub Pages 網址）")
     args = ap.parse_args()
@@ -1130,8 +1411,37 @@ def main():
         f.write(html)
     print(f"  ✓ 已輸出 {args.out}")
 
+    for rep in page["reps"]:
+        m = rep["mind"]
+        print(f'  [{rep["tab"]}] 莊家意圖：{m["title"]}　'
+              f'買權側 {_stance_txt("C", m["c"])}／賣權側 {_stance_txt("P", m["p"])}　'
+              f'區間 {m["lo"] or "—"} ～ {m["hi"] or "—"}')
+
+    # 記錄失敗不該連累網頁 —— 網頁已經寫好了，這裡只是累積驗證用的樣本
+    if args.history.lower() != "off":
+        try:
+            append_history(page, args.history or
+                           os.path.join(os.path.dirname(os.path.abspath(args.out)), HIST_NAME))
+        except Exception as e:
+            print(f"  ⚠ 四象限歷史寫入失敗（不影響網頁）：{e}")
+
     if args.notify:
         push_ntfy(page, page_url=args.page_url or None)
+
+    if args.track:
+        # 同一份 page 直接餵給追蹤模組，不必重抓一次 MIS。
+        # 追蹤失敗不該連累網頁 —— 網頁已經寫好了，這裡只是加值。
+        try:
+            import importlib.util
+            tp = os.path.join(BASE_DIR, "追蹤_選擇權籌碼區.py")
+            spec = importlib.util.spec_from_file_location("txo_track", tp)
+            trk = importlib.util.module_from_spec(spec)
+            sys.modules["txo_track"] = trk
+            spec.loader.exec_module(trk)
+            print("\n[籌碼區追蹤]")
+            trk.track(page, notify=args.notify, page_url=args.page_url or None)
+        except Exception as e:
+            print(f"  ⚠ 籌碼區追蹤失敗（不影響網頁）：{e}")
 
 
 if __name__ == "__main__":
