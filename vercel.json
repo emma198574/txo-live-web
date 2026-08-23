@@ -1,15 +1,14 @@
 {
+  "$comment": [
+    "Application Preset 選 Python 時，Vercel 是 catch-all：所有路徑都進 api/index.py，",
+    "這裡的 rewrites 一律被忽略（實測 /api/icon 與亂打的路徑都回同一份報價 HTML）。",
+    "所以路徑分派寫在 api/index.py 的 do_GET 裡，不要再往這裡加 rewrites。",
+    "本檔現在只剩 maxDuration 有實際作用。"
+  ],
   "functions": {
     "api/index.py": {
       "maxDuration": 30,
       "includeFiles": "*.py"
     }
-  },
-  "rewrites": [
-    { "source": "/icon.png", "destination": "/api/icon" },
-    { "source": "/apple-touch-icon.png", "destination": "/api/icon" },
-    { "source": "/apple-touch-icon-precomposed.png", "destination": "/api/icon" },
-    { "source": "/favicon.ico", "destination": "/api/icon" },
-    { "source": "/", "destination": "/api/index" }
-  ]
+  }
 }
