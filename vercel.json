@@ -1,0 +1,15 @@
+{
+  "functions": {
+    "api/index.py": {
+      "maxDuration": 30,
+      "includeFiles": "*.py"
+    }
+  },
+  "rewrites": [
+    { "source": "/icon.png", "destination": "/api/icon" },
+    { "source": "/apple-touch-icon.png", "destination": "/api/icon" },
+    { "source": "/apple-touch-icon-precomposed.png", "destination": "/api/icon" },
+    { "source": "/favicon.ico", "destination": "/api/icon" },
+    { "source": "/", "destination": "/api/index" }
+  ]
+}

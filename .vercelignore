@@ -1,0 +1,7 @@
+# public/ 是 GitHub Actions 產給 Cloudflare 的排程版網頁。
+# 不排除的話 Vercel 會把它當靜態網站，首頁就變成排程留下的舊 index.html，
+# 蓋掉 rewrite 指向的即時版——整個搬過來的意義就沒了。
+public/
+
+# Actions 的 workflow 對 Vercel 沒用，不必打包進 function
+.github/

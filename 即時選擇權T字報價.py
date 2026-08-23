@@ -1105,8 +1105,20 @@ def render_html(page):
 
     return f'''<meta charset="utf-8">
 <title>台指選擇權即時 T 字報價</title>
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<!-- 加到 iPhone 主畫面後全螢幕開啟（沒有這行會一直帶著 Safari 的網址列與工具列）。
+     status bar 設成透明是因為本頁 light/dark 自動切換：設死 black 或 default
+     一定會有一種模式下狀態列跟頁面撞色，透明才能讓 --bg 直接透上來。
+     代價是內容會延伸到瀏海底下，靠下面 .wrap 的 safe-area-inset 補回來。 -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="台指T字">
+<meta name="theme-color" content="#17181a">
+<!-- /icon.png 由 Vercel 的 api/icon.py 服務。排程版（Cloudflare）沒有這個路徑會 404，
+     iOS 就退回用網頁截圖當圖示——備援頁不需要漂亮圖示，故意不為它多改 workflow。 -->
+<link rel="apple-touch-icon" href="/icon.png">
+<link rel="icon" href="/icon.png">
 <style>
 :root{{--bg:#f7f6f3;--panel:#fff;--ink:#1c1b19;--muted:#6b6862;--line:#e7e4dd;
   --call:#c0392b;--put:#1e7a3c;--atm:#fff6d8;--hair:#efece5;}}
@@ -1120,7 +1132,9 @@ def render_html(page):
 body{{margin:0;background:var(--bg);color:var(--ink);
   font-family:-apple-system,"PingFang TC","Helvetica Neue",Arial,sans-serif;
   font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased;}}
-.wrap{{max-width:1080px;margin:0 auto;padding:24px 14px 60px;}}
+.wrap{{max-width:1080px;margin:0 auto;
+  padding:calc(24px + env(safe-area-inset-top)) calc(14px + env(safe-area-inset-right))
+          calc(60px + env(safe-area-inset-bottom)) calc(14px + env(safe-area-inset-left));}}
 h1{{font-size:20px;margin:0 0 4px;font-weight:700;letter-spacing:.3px}}
 .sub{{color:var(--muted);font-size:12.5px;margin-bottom:6px;line-height:1.6}}
 /* 資料新鮮度：雲端排程常被 GitHub 跳過，這裡讓「這份資料多舊」一眼可見 */
