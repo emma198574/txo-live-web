@@ -6,7 +6,7 @@
 並可推播摘要到 iPhone (ntfy)。設計給 GitHub Actions 排程在雲端定時執行，
 你的電腦關機時也會更新網頁與推播。
 
-網頁分成「週三結算」「週五結算」兩個分頁，各取該結算日成交量最大的到期別
+網頁分成「週三結算」「週五結算」「下週三結算」三個分頁，依到期日由近到遠取合約
 （週三＝W 系列週選或月選，週五＝F 系列週選），量比、價平、▲▼ 增減都各算各的。
 
 即時欄位（MIS，盤中/夜盤約每 5 秒更新）：權利金、成交量、成交金額、損益兩平。
@@ -212,14 +212,31 @@ def collect_groups(quote_list, night=False):
     return dict(groups)
 
 
-def pick_by_weekday(groups, weekday):
-    """挑出到期日落在指定星期、且成交量最大的那個到期別；沒有就回 None。"""
-    cand = {g: v for g, v in groups.items()
-            if expiry_weekday(v["exp"]) == weekday and v["vol"] > 0}
-    if not cand:
-        return None
-    gkey = max(cand, key=lambda g: cand[g]["vol"])
-    return gkey, cand[gkey]
+def picks_by_weekday(groups, weekday):
+    """
+    挑出到期日落在指定星期的到期別，依到期日由近到遠排成 list。
+    以前只回「量最大」那一個，加了下週三分頁後不能再這樣挑：週三到期的除了
+    最近的週選，還有月選與更遠的月份，量最大不等於第二近（例 08/26 W4 之後
+    下一個週三是 09/02 W1 才 597 口，但 09/16 月選有 2694 口）。
+    同一個到期日可能同時有兩組（月選遇上同日的週選），取量大的那組代表。
+    """
+    today = datetime.now(TW_TZ).strftime("%Y%m%d")
+    by_exp = {}
+    for g, v in groups.items():
+        exp = v["exp"]
+        # 已結算的合約 MIS 照理不會再回，但真的回了會讓「最近」那頁停在死合約
+        if expiry_weekday(exp) != weekday or v["vol"] <= 0 or exp < today:
+            continue
+        cur = by_exp.get(exp)
+        if cur is None or v["vol"] > cur[1]["vol"]:
+            by_exp[exp] = (g, v)
+    return [by_exp[e] for e in sorted(by_exp)]
+
+
+def pick_nth(groups, weekday, nth):
+    """該星期到期的第 nth 近（0 = 最近）到期別；沒有就回 None。"""
+    lst = picks_by_weekday(groups, weekday)
+    return lst[nth] if len(lst) > nth else None
 
 
 # ── 2. 即時標的價（大台指期 TXF） ─────────────────────────────────────────────
@@ -252,7 +269,7 @@ def fetch_txf_price(session, mkt):
 
 # ── 3. 前一交易日未平倉 OI（支撐壓力用；MIS 盤中無 OI） ────────────────────────
 
-_OI_CACHE = {}          # 一次下載、多個到期別共用（週三／週五分頁都要查同一份收盤檔）
+_OI_CACHE = {}          # 一次下載、多個到期別共用（各分頁都要查同一份收盤檔）
 
 
 def load_oi_buckets():
@@ -686,18 +703,20 @@ def build_report(gkey, grp, session, under, usrc, tab_id, tab_name, radius=1500)
     }
 
 
-# 分頁定義：(分頁 id, 到期日星期, 分頁標題)。月選也是星期三到期，會併進週三那頁。
-TABS = [("wed", 2, "週三結算"), ("fri", 4, "週五結算")]
+# 分頁定義：(分頁 id, 到期日星期, 第幾近的到期日, 分頁標題)。
+# 月選也是星期三到期，排在週三那條時間線上（第三個星期三那週就是月選當家）。
+# 排列照結算先後：本週三 → 週五 → 下週三。
+TABS = [("wed", 2, 0, "週三結算"), ("fri", 4, 0, "週五結算"), ("wed2", 2, 1, "下週三結算")]
 
 
 def build_page(radius=1500):
-    """抓一次 MIS，拆出週三／週五兩個到期別，組成整頁資料。"""
+    """抓一次 MIS，拆出各分頁對應的到期別，組成整頁資料。"""
     session, mkt = current_session()
     ql = fetch_mis_options(mkt)
     groups = collect_groups(ql, night=(mkt == "1"))
 
-    picks = [(tid, name) + (pick_by_weekday(groups, wd) or (None, None))
-             for tid, wd, name in TABS]
+    picks = [(tid, name) + (pick_nth(groups, wd, nth) or (None, None))
+             for tid, wd, nth, name in TABS]
     picks = [(tid, name, g, v) for tid, name, g, v in picks if g]
     if not picks:
         raise ValueError("MIS 未回傳週三／週五到期的選擇權報價")
@@ -711,7 +730,8 @@ def build_page(radius=1500):
             raise ValueError("無標的價可用（TXF 與 parity 皆失敗）")
 
     # 一頁做不出來不該拖垮另一頁：週五冷清時整支程式會死，網頁不更新、推播也不發，
-    # 而週三那頁其實資料好好的。改成逐頁隔離，兩頁都失敗才放棄。
+    # 而週三那頁其實資料好好的。改成逐頁隔離，全部失敗才放棄。
+    # 下週三剛掛牌時常常只有個位數口成交，本來就可能做不出來，這裡會自己略過。
     reps, errs = [], []
     for tid, name, g, v in picks:
         try:
@@ -720,7 +740,7 @@ def build_page(radius=1500):
             errs.append(f"{name}：{e}")
             print(f"  ⚠ 略過分頁 {name}：{e}")
     if not reps:
-        raise ValueError("兩個分頁都無法產生（" + "；".join(errs) + "）")
+        raise ValueError("所有分頁都無法產生（" + "；".join(errs) + "）")
     return {
         "session": session, "under": under, "usrc": usrc, "reps": reps,
         "now": datetime.now(TW_TZ).strftime("%Y-%m-%d %H:%M:%S"),
@@ -1089,7 +1109,7 @@ TAB_JS = """
 
 
 def render_html(page):
-    """整頁：共用表頭 + 週三／週五分頁。"""
+    """整頁：共用表頭 + 各結算日分頁。"""
     reps = page["reps"]
     live = page["session"] != "非交易" and not any(r["stale"] for r in reps)
     dot = "#e0392b" if live else "#9a9790"
@@ -1263,8 +1283,11 @@ thead th{{position:sticky;top:0;background:var(--panel);color:var(--muted);font-
   <b>資料超過 15 分鐘整張卡會轉灰停用</b>，因為方向判讀對新鮮度的要求比表格高得多。<br>
   <b>牆在移動</b>：卡片下緣比對盤中金額重心與昨日 OI 牆。兩者背離超過 100 點，代表今天的資金押在別的價位，
   昨日那道支撐壓力已經不是同一個位置。<br>
-  <b>分頁</b>：兩個分頁是不同結算日的合約（週三＝W 系列或月選、週五＝F 系列），
-  各自獨立計算量比、價平與 ▲▼ 增減；切換後的選擇會記住，自動重整不會跳回去。<br>
+  <b>分頁</b>：三個分頁是不同結算日的合約，照結算先後排（本週三＝W 系列或月選、
+  本週五＝F 系列、下週三＝下一個週三到期的合約），各自獨立計算量比、價平與 ▲▼ 增減；
+  切換後的選擇會記住，自動重整不會跳回去。<b>下週三</b>是還沒進入結算週的部位，
+  量通常只有本週的零頭，牆的位置常是先卡好的初始陣地，看的是下一段的區間預期，
+  不要拿來當今天的當沖依據；量能不足時撐壓會自動擋掉不顯示。<br>
   <b>限制</b>：OI 為期交所盤後公布，盤中沿用前一日；成交金額只知道成交，不知道那一口是新倉還是平倉，
   所以「築牆」是傾向推論而非事實。此表為 TAIFEX MIS 約每 5 秒的準即時報價，非逐筆。
 </div>
@@ -1299,7 +1322,7 @@ def push_ntfy(page, page_url=None):
         rt = f"　今日 {r['rate']:+.0f}%（{TAG_TXT.get(r.get('tag',''),'')}）" if r.get("rate") is not None else ""
         return (f"{label} {r['K']:,}（{r['vol']:,}口）"
                 f"　權利金 {r['px']:g}　金額 {money(r['amt'])}{rt}")
-    for rep in reps:                      # 週三／週五各一段
+    for rep in reps:                      # 每個分頁各一段
         crows, prows = rep["crows"], rep["prows"]
         c_vol = sum(r["vol"] for r in crows.values())
         p_vol = sum(r["vol"] for r in prows.values())
