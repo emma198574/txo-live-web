@@ -15,7 +15,6 @@
 用法：
     python3 即時選擇權T字報價.py                       # 產出 public/index.html
     python3 即時選擇權T字報價.py --notify              # 產出網頁並推播 ntfy（全量摘要）
-    python3 即時選擇權T字報價.py --notify-change       # 只在莊家意圖翻掉時才推播
     python3 即時選擇權T字報價.py --out 選擇權T字報價_當日.html
     python3 即時選擇權T字報價.py --radius 1500         # 顯示價平 ±N 點（預設 1500）
 
@@ -1414,205 +1413,6 @@ def append_history(page, path):
     print(f"  ✓ 四象限已記錄 {path}")
 
 
-# ── 6.6 莊家意圖「有變化才通知」 ─────────────────────────────────────────────
-#
-# 排程每 15 分鐘跑一次，每次都推等於一天洗幾十則通知；要的是結論真的翻掉時才響。
-# 判斷基準存成一個小 JSON（跟歷史 CSV 一樣放 --out 目錄，雲端會一起發到 gh-pages，
-# 否則 runner 每跑一次就忘記上一次是什麼狀態）。
-#
-# 三條刻意的規矩，每條都對應一個已知的假訊號來源：
-#
-# 1. **「不判定」不算變化**。夜盤開盤成交量從零重算，一定會先掉進「量能／樣本不足」，
-#    收盤前也會冷掉。那是資料不足，不是莊家收手 —— 拿它當變化會每天固定洗兩次手機。
-#    所以基準只記「判定得出來」的狀態，遇到不判定就整輪跳過、基準原封不動：
-#    量能回來後若結論跟先前一樣就安靜，不一樣才推。
-# 2. **換合約不比**。到期日一換就是另一條時間線（週三結算今天到期、明天指向下一週），
-#    舊合約的象限不能拿來跟新合約比。直接換掉基準，不推。
-# 3. **冷卻**。側分數是連續值，貼著門檻時會在兩個象限之間來回抖。同一分頁
-#    CHANGE_COOLDOWN_MIN 分鐘內最多一則；被冷卻擋掉時**不更新基準**，
-#    等冷卻過了狀態若仍然不同還是會補推，不會把真的翻盤吃掉。
-#
-# 觸發分兩級，級別決定冷卻怎麼算：
-#
-#   major　象限翻轉，或一側綠↔粉直接翻面（FLIP_PAIRS）。後者就算另一側還是中性、
-#          象限仍掛「觀望」也要推 —— 牆翻粉的瞬間是莊家棄守，這張卡最值錢的訊號。
-#   leg　　單腳表態：一側從中性跳出 SC/BC/SP/BP，或從表態退回中性。象限沒動，
-#          卡片上還是「觀望」，但畫面確實變了（例：買權側中性、賣權側跳出 BP）。
-#          這是半個訊號 —— 另一側還沒站隊，四象限不成立，所以低優先權、標明是預警。
-#
-# 兩級的冷卻分開記（ts / ts_leg）：major 只受上一則 major 節制，leg 受兩者節制。
-# 不分開的話，一則不痛不癢的單腳表態會把 45 分鐘內真正的象限翻轉擋掉 ——
-# 級別高的訊號絕不能被級別低的訊號排擠掉。
-
-STATE_NAME = "莊家意圖_已推播.json"
-CHANGE_COOLDOWN_MIN = 45
-
-QUAD_TITLE = {code: title for code, title, _ in QUAD.values()}
-QUAD_TITLE["flat"] = "觀望"
-QUAD_TAG = {"range": "left_right_arrow", "bull": "chart_with_upwards_trend",
-            "bear": "chart_with_downwards_trend", "vol": "zap", "flat": "wind_face"}
-
-# 綠↔粉直接翻面（這算 major）
-FLIP_PAIRS = {("SC", "BC"), ("BC", "SC"), ("SP", "BP"), ("BP", "SP")}
-
-# 單腳表態（中性↔SC/BC/SP/BP）要不要通知。嫌吵就改 False，只留 major。
-NOTIFY_LEG = True
-
-
-def mind_state(rep):
-    """把一個分頁的莊家意圖壓成可比對的狀態（象限＋兩腳＋到期日）。"""
-    m = rep["mind"]
-    return {"expiry": rep["expiry"], "code": m["code"],
-            "c": _stance_txt("C", m["c"]), "p": _stance_txt("P", m["p"])}
-
-
-def _undecided(st):
-    return st["c"] == "不判定" or st["p"] == "不判定"
-
-
-def _change_reason(prev, cur):
-    """有變化就回傳 (級別, 原因)，沒有回 (None, "")。級別見上面說明。"""
-    if (prev["c"], cur["c"]) in FLIP_PAIRS:
-        return "major", "買權側綠粉翻面"
-    if (prev["p"], cur["p"]) in FLIP_PAIRS:
-        return "major", "賣權側綠粉翻面"
-    if prev["code"] != cur["code"]:
-        return "major", "象限翻轉"
-    if NOTIFY_LEG:
-        # 走到這裡象限一定沒變，所以剩下的只可能是某一側中性↔表態的進出
-        for side, label in (("c", "買權側"), ("p", "賣權側")):
-            was, now = prev[side], cur[side]
-            if was == now:
-                continue
-            return "leg", (f"{label}退回中性（原 {was}）" if now == "中性"
-                           else f"{label}表態 {now}")
-    return None, ""
-
-
-def load_mind_state(path):
-    if not os.path.exists(path):
-        return {}
-    try:
-        with open(path, encoding="utf-8") as f:
-            return json.load(f)
-    except Exception as e:
-        print(f"  ⚠ 意圖基準讀取失敗（當成沒有基準）：{e}")
-        return {}
-
-
-def save_mind_state(path, state):
-    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(state, f, ensure_ascii=False, indent=1)
-
-
-def change_body(page, rep, prev, cur, why, tier="major"):
-    """變化通知的內容：先講翻成什麼，再講兩腳怎麼動、區間在哪、怎麼做、何時失效。"""
-    m = rep["mind"]
-    e = rep["expiry"]
-    # 象限沒換、只有一腳翻色時（例：SC→BC 但另一側中性、兩次都掛觀望），
-    # 寫「觀望 → 觀望」看了莫名其妙，改成只講翻的是哪一腳。
-    head = (f'{QUAD_TITLE[cur["code"]]}　{why}' if prev["code"] == cur["code"]
-            else f'{QUAD_TITLE[prev["code"]]} → {QUAD_TITLE[cur["code"]]}（{why}）')
-    lines = [head,
-             f'{rep["tab"]} {e[4:6]}/{e[6:8]}　標的 {page["under"]:,.0f}　'
-             f'{page["session"]} {rep["time"]}'
-             + ("　⚠ 非今日行情" if rep["stale"] else "")]
-    for label, side, st, was in (("標的之上・買權", "C", m["c"], prev["c"]),
-                                 ("標的之下・賣權", "P", m["p"], prev["p"])):
-        now_txt = _stance_txt(side, st)
-        move = now_txt if was == now_txt else f"{was} → {now_txt}"
-        desc = f"（{LEG_TXT[now_txt]}）" if now_txt in LEG_TXT else ""
-        num = "" if st["score"] is None else f'　{st["score"]:+.1f}pt / 門檻 {st["gate"]:.1f}'
-        lines.append(f"{label}　{move}{desc}{num}")
-    if m["hi"] or m["lo"]:
-        lo = f'{m["lo"]:,}（{m["lo_src"]}）' if m["lo"] else "—"
-        hi = f'{m["hi"]:,}（{m["hi_src"]}）' if m["hi"] else "—"
-        lines.append(f"參考區間　{lo} ～ {hi}")
-    if m["shifts"]:
-        lines.append("　·　".join(m["shifts"]))
-    if tier == "leg":
-        # 這種通知的重點是「有人開始動了」，不是四象限的做法 ——
-        # 象限根本沒成立，把 how／失效條件照抄過來會讓人誤以為有結論可以照做。
-        lines.append("另一側還沒站隊，四象限不成立：這是提前預警，先觀察對面會不會跟上，"
-                     "不是進場理由。")
-    else:
-        lines.append(m["how"])
-        lines.append(f'失效條件：{m["bad"]}')
-    return "\n".join(lines)
-
-
-def push_change(rep, cur, body, why="", tier="major", page_url=None):
-    """推一則意圖變化到 ntfy。回傳是否成功 —— 失敗就不更新基準，下一輪自動重試。"""
-    topic = load_ntfy_topic()
-    if not topic:
-        print("  ⚠ 無 ntfy topic，略過推播")
-        return False
-    if tier == "leg":
-        # 單腳表態是預警不是結論：標題直接寫是哪一腳動了，優先權壓低不搶注意力
-        title, tag, pri = f'莊家意圖・{why}（{rep["tab"]}）', "eyes", "low"
-    else:
-        title = f'莊家意圖 {QUAD_TITLE[cur["code"]]}（{rep["tab"]}）'
-        tag = QUAD_TAG.get(cur["code"], "bell")
-        # 象限真的成形（不是回到觀望）才用高優先權，讓手機在勿擾模式也會亮
-        pri = "default" if cur["code"] == "flat" else "high"
-    headers = {"Title": title.encode("utf-8"), "Tags": tag, "Priority": pri}
-    if page_url:
-        headers["Click"] = page_url
-    try:
-        r = requests.post(f"https://ntfy.sh/{topic}", data=body.encode("utf-8"),
-                          headers=headers, timeout=10)
-        if r.status_code >= 400:
-            print(f"  ⚠ ntfy 推播失敗：HTTP {r.status_code} {r.text[:200]}")
-            return False
-        print("  ✓ ntfy 變化推播成功")
-        return True
-    except Exception as e:
-        print(f"  ⚠ ntfy 推播失敗：{e}")
-        return False
-
-
-def notify_changes(page, path, push=True, page_url=None):
-    """比對上一次的基準，只在莊家意圖真的翻掉時推播。回傳推出去的則數。"""
-    state = load_mind_state(path)
-    now_ep = page["epoch"]
-    sent = 0
-    dirty = False
-    for rep in page["reps"]:
-        cur = mind_state(rep)
-        prev = state.get(rep["tab"])
-        if _undecided(cur):                                   # 規矩 1
-            continue
-        if not prev or prev.get("expiry") != cur["expiry"]:   # 規矩 2：建立／換線，安靜
-            state[rep["tab"]] = dict(cur, ts=0, ts_leg=0)
-            dirty = True
-            continue
-        tier, why = _change_reason(prev, cur)
-        if not tier:
-            continue
-        # major 只受上一則 major 節制；leg 受兩者節制（別讓半個訊號擠掉真的翻盤）
-        ts, ts_leg = int(prev.get("ts") or 0), int(prev.get("ts_leg") or 0)
-        last = ts if tier == "major" else max(ts, ts_leg)
-        wait = CHANGE_COOLDOWN_MIN * 60 - (now_ep - last)
-        if wait > 0:                                          # 規矩 3
-            print(f'  · [{rep["tab"]}] 意圖有變（{why}）但還在冷卻期，'
-                  f'{wait // 60 + 1} 分鐘後若仍不同再推')
-            continue
-        body = change_body(page, rep, prev, cur, why, tier=tier)
-        print(f'  ★ [{rep["tab"]}] 莊家意圖變化：{body.splitlines()[0]}')
-        if not push:
-            continue
-        if push_change(rep, cur, body, why=why, tier=tier, page_url=page_url):
-            nxt = dict(cur, ts=ts, ts_leg=ts_leg)
-            nxt["ts" if tier == "major" else "ts_leg"] = now_ep
-            state[rep["tab"]] = nxt
-            dirty = True
-            sent += 1
-    if dirty:
-        save_mind_state(path, state)
-    return sent
-
-
 # ── main ─────────────────────────────────────────────────────────────────────
 
 def main():
@@ -1624,10 +1424,6 @@ def main():
     ap.add_argument("--track", action="store_true",
                     help="順便記錄『今日』欄的粉綠籌碼位置並判斷莊家處境"
                          "（追蹤_選擇權籌碼區.py；配 --notify 才會推事件）")
-    ap.add_argument("--notify-change", action="store_true",
-                    help="只在莊家意圖（四象限）翻掉時推播 ntfy；沒變化就安靜（排程用）")
-    ap.add_argument("--state", default="",
-                    help=f"莊家意圖基準 JSON 路徑（預設 <--out 同目錄>/{STATE_NAME}）")
     ap.add_argument("--history", default="",
                     help=f"四象限歷史 CSV 路徑（預設 <--out 同目錄>/{HIST_NAME}；填 off 不記錄）")
     ap.add_argument("--page-url", default=os.environ.get("PAGE_URL", ""),
@@ -1665,16 +1461,6 @@ def main():
                            os.path.join(os.path.dirname(os.path.abspath(args.out)), HIST_NAME))
         except Exception as e:
             print(f"  ⚠ 四象限歷史寫入失敗（不影響網頁）：{e}")
-
-    # 變化推播失敗不該連累網頁；網頁已經寫好了，這裡只是加值
-    if args.notify_change:
-        try:
-            notify_changes(page,
-                           args.state or os.path.join(
-                               os.path.dirname(os.path.abspath(args.out)), STATE_NAME),
-                           page_url=args.page_url or None)
-        except Exception as e:
-            print(f"  ⚠ 意圖變化偵測失敗（不影響網頁）：{e}")
 
     if args.notify:
         push_ntfy(page, page_url=args.page_url or None)
