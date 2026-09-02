@@ -69,6 +69,10 @@ TWSE_INDEX    = "https://www.twse.com.tw/rwd/zh/afterTrading/FMTQIK"
 
 OUT_HTML = os.path.join(BASE_DIR, "台指攻防地圖.html")
 
+# 推播點下去要開的那一頁。固定同一個網址、每天更新同一頁，
+# 手機上的書籤才不會失效。環境變數 PAGE_URL 或 --url 可以蓋掉。
+PAGE_URL = "https://claude.ai/code/artifact/ee15a424-8e56-4158-a93e-eb42f2c19c3a"
+
 # ── 參數 ─────────────────────────────────────────────────────────────────────
 # 哪些到期別要進階梯。不能只取「最近的 N 個」——實測 09/02 那天最近的三個是
 # 0904/0909/0911，會把 OI 最厚的 0916 月選整個漏掉（0911 只有 603 口）。
@@ -762,11 +766,13 @@ def notify_lines(D):
     return "\n".join(L)
 
 
-def push_ntfy(D, dry=False):
+def push_ntfy(D, dry=False, url=None):
     body = notify_lines(D)
+    url = url or os.environ.get("PAGE_URL") or PAGE_URL
     if dry:
         print("── 推播內容（--dry-run，沒有送出）──")
         print(body)
+        print(f"── Click → {url}")
         return
     topic = load_ntfy_topic()
     if not topic:
@@ -774,6 +780,13 @@ def push_ntfy(D, dry=False):
         return
     headers = {"Title": f'台指攻防地圖 {D["oi_date"][5:]}'.encode("utf-8"),
                "Tags": "dart"}
+    if url:
+        # Click 讓整則通知可以直接點開地圖那一頁；Actions 再多給一顆按鈕，
+        # 因為 iOS 上從鎖定畫面滑開時 Click 不一定吃得到。
+        headers["Click"] = url
+        # 中文一定要自己 encode 成 utf-8 bytes：HTTP 標頭預設走 latin-1，
+        # 直接塞中文字串 requests 會丟 UnicodeEncodeError，整則推播沒送出去。
+        headers["Actions"] = f"view, 開地圖, {url}".encode("utf-8")
     try:
         # 一定要看狀態碼。只送不看的話，ntfy 回 4xx/5xx（topic 打錯、被限流）
         # 也會照印「推播成功」，手機收不到卻查不出來。
@@ -819,6 +832,7 @@ def main():
     ap.add_argument("--open", action="store_true", help="產完自動開瀏覽器")
     ap.add_argument("--notify", action="store_true", help="推播摘要到 iPhone (ntfy)")
     ap.add_argument("--dry-run", action="store_true", help="只印推播內容，不送出")
+    ap.add_argument("--url", help="推播點下去要開的網址（預設用 PAGE_URL）")
     a = ap.parse_args()
 
     today = (datetime.strptime(a.date, "%Y%m%d").date() if a.date
@@ -1089,7 +1103,7 @@ def main():
             json.dump(D, f, ensure_ascii=False, indent=1, default=str)
         print(f"✓ {a.json}")
     if a.notify or a.dry_run:
-        push_ntfy(D, dry=a.dry_run)
+        push_ntfy(D, dry=a.dry_run, url=a.url)
     if a.open:
         webbrowser.open("file://" + os.path.abspath(a.out))
     return 0
