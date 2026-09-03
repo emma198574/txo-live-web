@@ -30,6 +30,7 @@ import json
 import argparse
 from datetime import datetime, date, timedelta
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from zoneinfo import ZoneInfo
 
 import requests
@@ -709,9 +710,25 @@ def build_report(gkey, grp, session, under, usrc, tab_id, tab_name, radius=1500)
 TABS = [("wed", 2, 0, "週三結算"), ("fri", 4, 0, "週五結算"), ("wed2", 2, 1, "下週三結算")]
 
 
+def _safe_build_otc():
+    """給背景 thread 用的包裝：櫃買卡失敗一律吞掉，只留下 log。"""
+    try:
+        return build_otc()
+    except Exception as e:
+        print(f"  ⚠ 櫃買體溫卡略過：{e}")
+        return None
+
+
 def build_page(radius=1500):
     """抓一次 MIS，拆出各分頁對應的到期別，組成整頁資料。"""
     session, mkt = current_session()
+
+    # 櫃買體溫打的是 TWSE MIS 與 TPEx，跟 TAIFEX 這條線完全沒有相依，
+    # 所以丟到背景跟主流程並行。Vercel 的 serverless function 有執行時間上限，
+    # 多兩個串行的 HTTP 往返足以把整頁拖到逾時 —— 主表不能為附掛讀數冒這個險。
+    pool    = ThreadPoolExecutor(max_workers=1)
+    otc_fut = pool.submit(_safe_build_otc)
+
     ql = fetch_mis_options(mkt)
     groups = collect_groups(ql, night=(mkt == "1"))
 
@@ -741,13 +758,252 @@ def build_page(radius=1500):
             print(f"  ⚠ 略過分頁 {name}：{e}")
     if not reps:
         raise ValueError("所有分頁都無法產生（" + "；".join(errs) + "）")
+
+    # 櫃買體溫是附掛讀數，抓不到就不顯示那張卡，不能讓主表跟著死。
+    # 這裡收 build_page 開頭就丟出去的那個 thread，正常情況它早就跑完了。
+    otc = otc_fut.result(timeout=8) if otc_fut else None
+
     return {
-        "session": session, "under": under, "usrc": usrc, "reps": reps,
+        "session": session, "under": under, "usrc": usrc, "reps": reps, "otc": otc,
         "now": datetime.now(TW_TZ).strftime("%Y-%m-%d %H:%M:%S"),
         # 給網頁算「資料幾分鐘前」用。存 epoch 秒而非字串，才不會因為看的人
         # 所在時區不同而把台北時間誤判成當地時間。
         "epoch": int(datetime.now(TW_TZ).timestamp()),
     }
+
+
+# ── 4.9 櫃買（上櫃）即時體溫 ─────────────────────────────────────────────────
+#
+# 為什麼櫃買要用這種土法煉鋼的算法，而不是照抄上面那整套選擇權讀數：
+# 櫃買**沒有選擇權、沒有官方 VIX**，櫃買期貨 GTF 實測日成交 0 口、OI 0 口
+# （2026-09-03 用期交所 MIS 再驗一次）。所以 OI 牆／Max Pain／P-C 比／莊家象限
+# 在櫃買一個樣本都讀不到，中小型股的多空只能從**現貨側**看。
+#
+# 兩個免費即時源（皆已實測）：
+#   1. TWSE MIS 指數即時 o00（櫃買）＋ t00（加權），約 5 秒更新，一次抓兩檔
+#   2. TPEx 市場現況（漲跌／漲停跌停家數），盤中更新；注意官方端點拼字是
+#      mainborad（TPEx 自己打錯，用正確的 mainboard 會 302 導走）
+#
+# 讀法：櫃買本身漲跌只說「跌多少」，說不出「是不是中小型股單獨在被砍」。
+# 真正有訊息的是兩個對照 ——
+#   相對強弱 = 櫃買漲跌% − 加權漲跌%   → 錢是流進還是流出中小型股
+#   廣度     = 上漲家數 /（漲＋跌）    → 是普漲普跌，還是少數幾檔在拉指數
+# 兩者交叉才分得出「指數強但個股弱」這種最容易套人的盤。
+#
+# 抓不到就整張卡不顯示 —— 這是附掛功能，絕不能拖垮主表。
+
+MIS_TWSE_URL = "https://mis.twse.com.tw/stock/api/getStockInfo.jsp"
+TPEX_HL_URL  = "https://www.tpex.org.tw/openapi/v1/tpex_mainborad_highlight"
+
+# 相對強弱的顯著門檻（百分點）。低於這個幅度是兩個指數成分股結構不同造成的
+# 日常擺動，不是資金流向；抓太細會每天都在報「中小型股走弱」。
+OTC_SPREAD_GATE = 0.3
+# 強弱條的滿格刻度（百分點）。±3pp 是櫃買對加權的日常極端值，超過就滿格。
+OTC_SPREAD_FULL = 3.0
+# 廣度的中性帶。以 50% 為軸各留 5pp，避免在 49/51 之間反覆翻臉。
+OTC_BREADTH_HI = 0.55
+OTC_BREADTH_LO = 0.45
+
+# (相對強弱, 廣度) → (代號, 標題, 白話怎麼讀)
+OTC_VERDICT = {
+    ("up",   "wide"): ("hot",    "中小型股領漲",
+                       "櫃買比大盤強，而且是普漲——多數上櫃股票都在漲，"
+                       "不是靠少數幾檔拉指數。錢正在往中小型股跑。"),
+    ("up",   "thin"): ("narrow", "指數強、個股弱",
+                       "櫃買指數比大盤強，但下跌家數多於上漲——是少數權值股在撐指數，"
+                       "多數上櫃股票其實在跌。這種盤看指數追高最容易套。"),
+    ("down", "thin"): ("cold",   "中小型股被棄守",
+                       "櫃買比大盤弱，多數上櫃股票同步在跌。錢正在從中小型股撤，"
+                       "這不是大盤系統性下跌，是中小型股單獨被砍。"),
+    ("down", "wide"): ("rotate", "指數弱、個股撐住",
+                       "櫃買指數被少數權值股拖累，但上漲家數其實多於下跌，"
+                       "多數上櫃股票沒有跟著走弱。指數難看，個股不見得。"),
+}
+
+
+def _mg_roc(s):
+    """民國日期字串（1150903）轉 date；轉不動回 None。"""
+    s = (s or "").strip()
+    if len(s) != 7 or not s.isdigit():
+        return None
+    try:
+        return date(int(s[:3]) + 1911, int(s[3:5]), int(s[5:7]))
+    except ValueError:
+        return None
+
+
+def fetch_mis_index():
+    """TWSE MIS 一次抓櫃買 o00 + 加權 t00 即時指數。"""
+    r = requests.get(
+        MIS_TWSE_URL,
+        params={"ex_ch": "otc_o00.tw|tse_t00.tw", "json": "1", "delay": "0"},
+        headers={"Referer": "https://mis.twse.com.tw/stock/index.jsp", "User-Agent": UA},
+        timeout=6,
+    )
+    r.raise_for_status()
+    out = {}
+    for m in r.json().get("msgArray", []):
+        px, prev = _num(m.get("z")), _num(m.get("y"))
+        if not px or not prev:
+            continue
+        hi, lo = _num(m.get("h")), _num(m.get("l"))
+        out[m.get("c")] = {
+            "px": px, "prev": prev, "chg": (px / prev - 1) * 100,
+            # 振幅是櫃買唯一能算的「波動」讀數 —— 沒有 VIX 可用時的替代品
+            "amp": ((hi - lo) / prev * 100) if (hi and lo) else None,
+            "time": m.get("t") or "", "date": m.get("d") or "",
+        }
+    return out
+
+
+def fetch_tpex_breadth():
+    """TPEx 市場現況：上櫃漲跌／漲停跌停家數。"""
+    r = requests.get(TPEX_HL_URL, headers={"User-Agent": UA,
+                                           "Accept": "application/json"}, timeout=6)
+    r.raise_for_status()
+    rows = r.json()
+    if not rows:
+        return None
+    d = rows[0]
+
+    def n(k):
+        try:
+            return int(str(d.get(k, "")).replace(",", ""))
+        except ValueError:
+            return 0
+    up, down = n("PriceRiseCompanyNumbers"), n("PriceDeclineCompanyNumbers")
+    if up + down == 0:
+        return None
+    return {"up": up, "down": down, "flat": n("PriceFlatCompanyNumbers"),
+            "lu": n("LimitUpCompanyNumbers"), "ld": n("LimitDownCompanyNumbers"),
+            "ratio": up / (up + down), "date": _mg_roc(d.get("Date")),
+            "amt": n("DailyTradingValue")}
+
+
+def build_otc():
+    """組出櫃買卡片要的資料；任何一步失敗都回 None（不顯示卡片）。"""
+    idx = fetch_mis_index()
+    otc, twse = idx.get("o00"), idx.get("t00")
+    if not otc or not twse:
+        raise ValueError("MIS 未回傳 o00／t00 指數")
+
+    spread = otc["chg"] - twse["chg"]
+
+    try:
+        br = fetch_tpex_breadth()
+    except Exception as e:
+        print(f"  ⚠ 櫃買廣度抓取失敗（卡片改只顯示強弱）：{e}")
+        br = None
+
+    now   = datetime.now(TW_TZ)
+    today = now.date()
+    # 上櫃現貨 09:00–13:30；只有這段時間卡片才算「即時」，其餘顯示最後收盤。
+    mins  = now.hour * 60 + now.minute
+    live  = now.weekday() < 5 and 540 <= mins <= 810 and otc["date"] == today.strftime("%Y%m%d")
+    # 廣度若不是今天的（TPEx 尚未換日／端點沒更新），寧可不判讀也不要拿昨天的家數
+    # 去配今天的指數 —— 那會湊出一個看起來很像訊號的假象限。
+    if br and br["date"] and br["date"] != today:
+        br["stale"] = True
+    elif br:
+        br["stale"] = False
+
+    sdir = "up" if spread >= OTC_SPREAD_GATE else ("down" if spread <= -OTC_SPREAD_GATE else "mid")
+    if br and not br["stale"]:
+        bdir = ("wide" if br["ratio"] >= OTC_BREADTH_HI else
+                "thin" if br["ratio"] <= OTC_BREADTH_LO else "mid")
+    else:
+        bdir = None
+
+    if sdir == "mid":
+        code, title, how = ("flat", "與大盤同步",
+                            f"櫃買與加權的漲跌差距只有 {spread:+.2f} 個百分點，"
+                            f"在 ±{OTC_SPREAD_GATE} 的日常擺動範圍內，看不出資金特別偏向哪一邊。")
+    elif bdir is None or bdir == "mid":
+        strong = spread > 0
+        code = "hot" if strong else "cold"
+        title = "中小型股偏強" if strong else "中小型股偏弱"
+        tail = ("；廣度在中性帶，看不出是普漲普跌還是少數股在動"
+                if bdir == "mid" else "；今日無廣度資料，只憑指數強弱判讀")
+        how = (f"櫃買比大盤{'強' if strong else '弱'} {abs(spread):.2f} 個百分點{tail}。")
+    else:
+        code, title, how = OTC_VERDICT[(sdir, bdir)]
+
+    return {"otc": otc, "twse": twse, "spread": spread, "br": br, "live": live,
+            "code": code, "title": title, "how": how}
+
+
+def render_otc(page):
+    """櫃買體溫卡：兩個指數對照 + 強弱條 + 廣度條 + 一句白話結論。
+
+    刻意不做成分頁：櫃買跟選擇權到期別無關，三個分頁看到的都該是同一份。
+    """
+    o = page.get("otc")
+    if not o:
+        return ""
+    otc, twse, sp, br = o["otc"], o["twse"], o["spread"], o["br"]
+
+    # 強弱條：中央為 0，往右紅＝櫃買強、往左綠＝櫃買弱（台股慣例）
+    w    = min(abs(sp) / OTC_SPREAD_FULL, 1.0) * 50
+    left = 50 - w if sp < 0 else 50
+    scls = "up" if sp > 0 else ("down" if sp < 0 else "mid")
+
+    def pc(v):
+        cls = "up" if v > 0 else ("down" if v < 0 else "mid")
+        return f'<span class="opc {cls}">{v:+.2f}%</span>'
+
+    amp = (f'　·　今日振幅 {otc["amp"]:.2f}%' if otc.get("amp") else "")
+    tag = ('<span class="olive">盤中</span>' if o["live"]
+           else f'<span class="oclosed">已收盤 {otc["date"][4:6]}/{otc["date"][6:8]}</span>')
+
+    if br and not br["stale"]:
+        tot = max(br["up"] + br["down"] + br["flat"], 1)
+        up_w, dn_w = br["up"] / tot * 100, br["down"] / tot * 100
+        lim = ""
+        if br["lu"] or br["ld"]:
+            lim = (f'　·　漲停 <b class="up">{br["lu"]}</b>　跌停 <b class="down">{br["ld"]}</b>')
+        # 「每 10 檔有幾檔在漲」比 19.6% 這種數字好懂得多
+        per10 = br["up"] / (br["up"] + br["down"]) * 10
+        # 條上那條白線就是 50%；這句話是它的文字版，兩者要說同一件事
+        half = ("上漲家數過半" if br["ratio"] > 0.5 else
+                "下跌家數過半" if br["ratio"] < 0.5 else "漲跌家數各半")
+        bhtml = f'''<div class="orow">
+    <div class="olab">上櫃漲跌家數<small>每 10 檔約 {per10:.0f} 檔在漲</small></div>
+    <div class="obar breadth">
+      <span class="bup" style="width:{up_w:.1f}%"></span>
+      <span class="bfl" style="width:{100 - up_w - dn_w:.1f}%"></span>
+      <span class="bdn" style="width:{dn_w:.1f}%"></span>
+    </div>
+    <div class="oend"><b class="up">{br["up"]}</b> 漲 / <b class="down">{br["down"]}</b> 跌{lim}
+      <span class="ohalf">{half}</span></div>
+  </div>'''
+    else:
+        why = "資料非今日，不採用" if (br and br["stale"]) else "抓取失敗"
+        bhtml = f'<div class="orow"><div class="olab">上櫃漲跌家數</div>' \
+                f'<div class="oend thin">無資料（{why}）</div></div>'
+
+    return f'''<div class="otc {o["code"]}">
+  <div class="oh">櫃買體溫<small>中小型股</small><span class="oq">{o["title"]}</span>{tag}</div>
+  <div class="onums">
+    <div class="on"><span class="onl">櫃買指數</span><b>{otc["px"]:,.2f}</b>{pc(otc["chg"])}</div>
+    <div class="on"><span class="onl">加權指數</span><b>{twse["px"]:,.0f}</b>{pc(twse["chg"])}</div>
+    <div class="on"><span class="onl">櫃買比大盤</span><b class="{scls}">{sp:+.2f}</b>
+      <span class="onu">個百分點</span></div>
+  </div>
+  <div class="orow">
+    <div class="olab">相對強弱<small>櫃買 − 加權<br>左弱右強・滿格 ±{OTC_SPREAD_FULL:.0f}pp</small></div>
+    <div class="obar spread"><i></i>
+      <span class="sfill {scls}" style="left:{left:.1f}%;width:{w:.1f}%"></span>
+    </div>
+    <div class="oend">櫃買{'強' if sp > 0 else '弱'}於大盤 {abs(sp):.2f}pp{amp}</div>
+  </div>
+  {bhtml}
+  <div class="ohow">{o["how"]}</div>
+  <div class="onote">櫃買沒有選擇權、沒有官方 VIX、櫃買期貨日成交 0 口，
+    所以上面那套 OI 牆／P-C 比在櫃買讀不到，這裡改用現貨側的相對強弱與廣度。
+    相對強弱是<b>單純相減、未做 beta 調整</b>（櫃買波動天生比加權大，同向時本來就會有落差）。
+    <b>此卡未經回測，只描述現在盤面長什麼樣，不是進出場訊號。</b></div>
+</div>'''
+
 
 
 # ── 5. HTML 產出 ─────────────────────────────────────────────────────────────
@@ -1246,10 +1502,65 @@ thead th{{position:sticky;top:0;background:var(--panel);color:var(--muted);font-
 .tab.on{{background:var(--ink);color:var(--bg);border-color:var(--ink)}}
 .sub-tab{{margin:0 2px 4px}}
 .panel{{display:none}} .panel.on{{display:block}}
+/* 櫃買體溫卡：櫃買沒有選擇權可讀，改用現貨側的相對強弱＋廣度。
+   放在分頁之外，因為它跟到期別無關，三個分頁看到的都該是同一份。 */
+.otc{{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--muted);
+  border-radius:10px;padding:12px 14px;margin:12px 0 4px}}
+.otc.hot{{border-left-color:var(--call)}} .otc.cold{{border-left-color:var(--put)}}
+.otc.narrow,.otc.rotate{{border-left-color:#d8b24a}}
+.oh{{font-size:12px;font-weight:700;color:var(--muted);letter-spacing:.4px}}
+.oh small{{font-size:10px;font-weight:500;margin-left:5px;opacity:.75}}
+.oq{{color:var(--ink);font-size:16px;margin-left:9px;letter-spacing:0}}
+.otc.hot .oq{{color:var(--call)}} .otc.cold .oq{{color:var(--put)}}
+.otc.narrow .oq,.otc.rotate .oq{{color:#c99a1e}}
+.olive,.oclosed{{font-size:10px;font-weight:600;margin-left:8px;padding:1px 6px;border-radius:999px;
+  border:1px solid var(--line);color:var(--muted);vertical-align:2px}}
+.olive{{color:#e0392b;border-color:#e0392b66}}
+.onums{{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:10px 0 4px}}
+@media(max-width:640px){{.onums{{grid-template-columns:1fr 1fr}}
+  .on:last-child{{grid-column:1/-1;padding-top:2px;border-top:1px solid var(--hair)}}}}
+.on{{display:flex;align-items:baseline;gap:6px;flex-wrap:wrap}}
+.onl{{font-size:10.5px;color:var(--muted);min-width:56px}}
+.on b{{font-size:17px;font-weight:700}}
+.onu{{font-size:10px;color:var(--muted)}}
+.opc{{font-size:12.5px;font-weight:600}}
+.otc .up{{color:var(--call)}} .otc .down{{color:var(--put)}} .otc .mid{{color:var(--muted)}}
+/* 一行 = 標籤 + 條 + 右側白話。手機上條會自己換行到整寬。 */
+.orow{{display:grid;grid-template-columns:104px 1fr auto;align-items:center;gap:10px;
+  margin:9px 0;font-size:11.5px}}
+@media(max-width:640px){{.orow{{grid-template-columns:1fr;gap:4px}}}}
+.olab{{color:var(--muted);font-size:10.5px;line-height:1.35}}
+.olab small{{display:block;font-size:9.5px;opacity:.8}}
+.obar{{position:relative;height:12px;border-radius:999px;overflow:hidden;background:var(--hair);
+  display:flex;min-width:120px}}
+/* 強弱條：中線為 0，往右紅＝櫃買強、往左綠＝櫃買弱。
+   底色先用極淡的綠→紅打底，這樣即使填色只有一小段，也看得出左右各代表什麼。 */
+.obar.spread{{background:linear-gradient(90deg,
+  color-mix(in srgb,var(--put) 16%,var(--hair)) 0%,var(--hair) 42%,
+  var(--hair) 58%,color-mix(in srgb,var(--call) 16%,var(--hair)) 100%)}}
+.obar.spread i{{position:absolute;left:50%;top:-1px;bottom:-1px;width:2px;margin-left:-1px;
+  background:var(--muted);opacity:.55;z-index:3}}
+/* 廣度條的 50% 標線：有沒有過半是這條的重點，沒有刻度就只是一條彩色長條 */
+.obar.breadth::after{{content:"";position:absolute;left:50%;top:-1px;bottom:-1px;width:2px;
+  margin-left:-1px;background:var(--panel);opacity:.85;z-index:3}}
+.sfill{{position:absolute;top:0;bottom:0;border-radius:999px}}
+.sfill.up{{background:var(--call)}} .sfill.down{{background:var(--put)}}
+.sfill.mid{{background:var(--muted)}}
+/* 廣度條：紅（漲）／灰（平）／綠（跌），寬度就是家數佔比 */
+.breadth .bup{{background:var(--call)}} .breadth .bdn{{background:var(--put)}}
+.breadth .bfl{{background:var(--line)}}
+.oend{{font-size:11px;color:var(--muted);white-space:nowrap}}
+.oend b{{font-size:12.5px;font-weight:700}}
+.oend.thin{{opacity:.7}}
+.ohalf{{display:block;font-size:10px;opacity:.85}}
+.ohow{{font-size:12.5px;line-height:1.7;padding-top:9px;margin-top:4px;border-top:1px solid var(--hair)}}
+.onote{{color:var(--muted);font-size:10.5px;margin-top:8px;padding-top:7px;
+  border-top:1px solid var(--hair);line-height:1.65}}
 </style>
 <div class="wrap" data-gen="{page["now"]}" data-epoch="{page["epoch"]}">
 <h1>台指選擇權即時 T 字報價</h1>
 <div class="sub"><span class="dot"></span>{sess_txt}　·　標的 {page["under"]:,.0f}（{page["usrc"]}）　·　產生 {page["now"]}　·　<span id="age">—</span></div>
+{render_otc(page)}
 <div class="tabs">
   {tabs_html}
 </div>
