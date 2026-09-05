@@ -30,7 +30,6 @@ import json
 import argparse
 from datetime import datetime, date, timedelta
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor
 from zoneinfo import ZoneInfo
 
 import requests
@@ -710,24 +709,9 @@ def build_report(gkey, grp, session, under, usrc, tab_id, tab_name, radius=1500)
 TABS = [("wed", 2, 0, "週三結算"), ("fri", 4, 0, "週五結算"), ("wed2", 2, 1, "下週三結算")]
 
 
-def _safe_build_otc():
-    """給背景 thread 用的包裝：櫃買卡失敗一律吞掉，只留下 log。"""
-    try:
-        return build_otc()
-    except Exception as e:
-        print(f"  ⚠ 櫃買體溫卡略過：{e}")
-        return None
-
-
 def build_page(radius=1500):
     """抓一次 MIS，拆出各分頁對應的到期別，組成整頁資料。"""
     session, mkt = current_session()
-
-    # 櫃買體溫打的是 TWSE MIS 與 TPEx，跟 TAIFEX 這條線完全沒有相依，
-    # 所以丟到背景跟主流程並行。Vercel 的 serverless function 有執行時間上限，
-    # 多兩個串行的 HTTP 往返足以把整頁拖到逾時 —— 主表不能為附掛讀數冒這個險。
-    pool    = ThreadPoolExecutor(max_workers=1)
-    otc_fut = pool.submit(_safe_build_otc)
 
     ql = fetch_mis_options(mkt)
     groups = collect_groups(ql, night=(mkt == "1"))
@@ -759,12 +743,10 @@ def build_page(radius=1500):
     if not reps:
         raise ValueError("所有分頁都無法產生（" + "；".join(errs) + "）")
 
-    # 櫃買體溫是附掛讀數，抓不到就不顯示那張卡，不能讓主表跟著死。
-    # 這裡收 build_page 開頭就丟出去的那個 thread，正常情況它早就跑完了。
-    otc = otc_fut.result(timeout=8) if otc_fut else None
-
+    # 這裡本來還會收一個抓櫃買體溫的背景 thread。改放多空空間卡之後，
+    # 那張卡的資料是瀏覽器端直接跟 Cloudflare Worker 拿的，本頁一個 HTTP 都不必多打。
     return {
-        "session": session, "under": under, "usrc": usrc, "reps": reps, "otc": otc,
+        "session": session, "under": under, "usrc": usrc, "reps": reps,
         "now": datetime.now(TW_TZ).strftime("%Y-%m-%d %H:%M:%S"),
         # 給網頁算「資料幾分鐘前」用。存 epoch 秒而非字串，才不會因為看的人
         # 所在時區不同而把台北時間誤判成當地時間。
@@ -772,238 +754,52 @@ def build_page(radius=1500):
     }
 
 
-# ── 4.9 櫃買（上櫃）即時體溫 ─────────────────────────────────────────────────
+# ── 4.9 盤中多空空間（全市場三線）───────────────────────────────────────────
 #
-# 為什麼櫃買要用這種土法煉鋼的算法，而不是照抄上面那整套選擇權讀數：
-# 櫃買**沒有選擇權、沒有官方 VIX**，櫃買期貨 GTF 實測日成交 0 口、OI 0 口
-# （2026-09-03 用期交所 MIS 再驗一次）。所以 OI 牆／Max Pain／P-C 比／莊家象限
-# 在櫃買一個樣本都讀不到，中小型股的多空只能從**現貨側**看。
+# 為什麼這張卡的資料不是這支程式自己抓的：三條線要掃全市場約 2,700 檔的即時報價，
+# 掃一輪要 20 秒。放進本頁的請求裡一定拖爆 —— Vercel 的 function 有執行時間上限，
+# 而使用者打開這頁的耐心預算是 10 秒。所以掃描交給常駐在 Cloudflare 的另一支
+# Worker（本工作區的 盤中多空空間App/，cron 每 5 分鐘掃一輪把結果存進 KV），
+# 這頁只在**瀏覽器端**去讀那份 KV 快照畫圖。因此：
+#   1. 這張卡的即時性由 Worker 的 5 分鐘 cron 決定，跟本頁的產生時間無關。
+#      本頁 60 秒自動重整會順便重畫，卡片自己另外也每 60 秒重抓一次 ——
+#      所以就算使用者把頁面開著不動，圖也會自己往前長。
+#   2. 兩條線互不牽連：本頁抓不到 MIS 時這張卡照樣是活的，反之亦然。
+#   3. Worker 那邊一定要開 CORS（已開 Access-Control-Allow-Origin: *），
+#      否則瀏覽器會靜靜擋掉，卡片永遠空白而且不會有任何錯誤畫面可看。
 #
-# 兩個免費即時源（皆已實測）：
-#   1. TWSE MIS 指數即時 o00（櫃買）＋ t00（加權），約 5 秒更新，一次抓兩檔
-#   2. TPEx 市場現況（漲跌／漲停跌停家數），盤中更新；注意官方端點拼字是
-#      mainborad（TPEx 自己打錯，用正確的 mainboard 會 302 導走）
+# 三條線的定義（與 分析_盤中多空空間.py、盤中多空空間App/public/app.js 一致）：
+#   多空空間（紅綠棒）＝上漲家數 − 下跌家數
+#   快動能（黃線）    ＝多空空間 − 前 6 根（30 分鐘）移動平均
+#   慢動能（藍線）    ＝多空空間 − 前 20 根（100 分鐘）移動平均，
+#                      每 150 家跳一階、夾在 ±200
 #
-# 讀法：櫃買本身漲跌只說「跌多少」，說不出「是不是中小型股單獨在被砍」。
-# 真正有訊息的是兩個對照 ——
-#   相對強弱 = 櫃買漲跌% − 加權漲跌%   → 錢是流進還是流出中小型股
-#   廣度     = 上漲家數 /（漲＋跌）    → 是普漲普跌，還是少數幾檔在拉指數
-# 兩者交叉才分得出「指數強但個股弱」這種最容易套人的盤。
-#
-# 抓不到就整張卡不顯示 —— 這是附掛功能，絕不能拖垮主表。
-
-MIS_TWSE_URL = "https://mis.twse.com.tw/stock/api/getStockInfo.jsp"
-TPEX_HL_URL  = "https://www.tpex.org.tw/openapi/v1/tpex_mainborad_highlight"
-
-# 相對強弱的顯著門檻（百分點）。低於這個幅度是兩個指數成分股結構不同造成的
-# 日常擺動，不是資金流向；抓太細會每天都在報「中小型股走弱」。
-OTC_SPREAD_GATE = 0.3
-# 強弱條的滿格刻度（百分點）。±3pp 是櫃買對加權的日常極端值，超過就滿格。
-OTC_SPREAD_FULL = 3.0
-# 廣度的中性帶。以 50% 為軸各留 5pp，避免在 49/51 之間反覆翻臉。
-OTC_BREADTH_HI = 0.55
-OTC_BREADTH_LO = 0.45
-
-# (相對強弱, 廣度) → (代號, 標題, 白話怎麼讀)
-OTC_VERDICT = {
-    ("up",   "wide"): ("hot",    "中小型股領漲",
-                       "櫃買比大盤強，而且是普漲——多數上櫃股票都在漲，"
-                       "不是靠少數幾檔拉指數。錢正在往中小型股跑。"),
-    ("up",   "thin"): ("narrow", "指數強、個股弱",
-                       "櫃買指數比大盤強，但下跌家數多於上漲——是少數權值股在撐指數，"
-                       "多數上櫃股票其實在跌。這種盤看指數追高最容易套。"),
-    ("down", "thin"): ("cold",   "中小型股被棄守",
-                       "櫃買比大盤弱，多數上櫃股票同步在跌。錢正在從中小型股撤，"
-                       "這不是大盤系統性下跌，是中小型股單獨被砍。"),
-    ("down", "wide"): ("rotate", "指數弱、個股撐住",
-                       "櫃買指數被少數權值股拖累，但上漲家數其實多於下跌，"
-                       "多數上櫃股票沒有跟著走弱。指數難看，個股不見得。"),
-}
+# 這張卡**刻意不搬型態判讀過來**（開盤衰竭、反彈品質、背離那一整套）。
+# 那些規則現在已經有本機 Python 與 App 前端兩份要同步，再多一份必然走針。
+# 卡片只給事實：現值、日內最強最弱、紅綠棒根數；要判讀就點右上角進 App。
+DUOKONG_URL = "https://duokong.emma198574.workers.dev"
 
 
-def _mg_roc(s):
-    """民國日期字串（1150903）轉 date；轉不動回 None。"""
-    s = (s or "").strip()
-    if len(s) != 7 or not s.isdigit():
-        return None
-    try:
-        return date(int(s[:3]) + 1911, int(s[3:5]), int(s[5:7]))
-    except ValueError:
-        return None
+def render_duokong():
+    """多空空間卡的外殼。數字與圖都由 DUOKONG_JS 在瀏覽器端填。
 
-
-def fetch_mis_index():
-    """TWSE MIS 一次抓櫃買 o00 + 加權 t00 即時指數。"""
-    r = requests.get(
-        MIS_TWSE_URL,
-        params={"ex_ch": "otc_o00.tw|tse_t00.tw", "json": "1", "delay": "0"},
-        headers={"Referer": "https://mis.twse.com.tw/stock/index.jsp", "User-Agent": UA},
-        timeout=6,
-    )
-    r.raise_for_status()
-    out = {}
-    for m in r.json().get("msgArray", []):
-        px, prev = _num(m.get("z")), _num(m.get("y"))
-        if not px or not prev:
-            continue
-        hi, lo = _num(m.get("h")), _num(m.get("l"))
-        out[m.get("c")] = {
-            "px": px, "prev": prev, "chg": (px / prev - 1) * 100,
-            # 振幅是櫃買唯一能算的「波動」讀數 —— 沒有 VIX 可用時的替代品
-            "amp": ((hi - lo) / prev * 100) if (hi and lo) else None,
-            "time": m.get("t") or "", "date": m.get("d") or "",
-        }
-    return out
-
-
-def fetch_tpex_breadth():
-    """TPEx 市場現況：上櫃漲跌／漲停跌停家數。"""
-    r = requests.get(TPEX_HL_URL, headers={"User-Agent": UA,
-                                           "Accept": "application/json"}, timeout=6)
-    r.raise_for_status()
-    rows = r.json()
-    if not rows:
-        return None
-    d = rows[0]
-
-    def n(k):
-        try:
-            return int(str(d.get(k, "")).replace(",", ""))
-        except ValueError:
-            return 0
-    up, down = n("PriceRiseCompanyNumbers"), n("PriceDeclineCompanyNumbers")
-    if up + down == 0:
-        return None
-    return {"up": up, "down": down, "flat": n("PriceFlatCompanyNumbers"),
-            "lu": n("LimitUpCompanyNumbers"), "ld": n("LimitDownCompanyNumbers"),
-            "ratio": up / (up + down), "date": _mg_roc(d.get("Date")),
-            "amt": n("DailyTradingValue")}
-
-
-def build_otc():
-    """組出櫃買卡片要的資料；任何一步失敗都回 None（不顯示卡片）。"""
-    idx = fetch_mis_index()
-    otc, twse = idx.get("o00"), idx.get("t00")
-    if not otc or not twse:
-        raise ValueError("MIS 未回傳 o00／t00 指數")
-
-    spread = otc["chg"] - twse["chg"]
-
-    try:
-        br = fetch_tpex_breadth()
-    except Exception as e:
-        print(f"  ⚠ 櫃買廣度抓取失敗（卡片改只顯示強弱）：{e}")
-        br = None
-
-    now   = datetime.now(TW_TZ)
-    today = now.date()
-    # 上櫃現貨 09:00–13:30；只有這段時間卡片才算「即時」，其餘顯示最後收盤。
-    mins  = now.hour * 60 + now.minute
-    live  = now.weekday() < 5 and 540 <= mins <= 810 and otc["date"] == today.strftime("%Y%m%d")
-    # 廣度若不是今天的（TPEx 尚未換日／端點沒更新），寧可不判讀也不要拿昨天的家數
-    # 去配今天的指數 —— 那會湊出一個看起來很像訊號的假象限。
-    if br and br["date"] and br["date"] != today:
-        br["stale"] = True
-    elif br:
-        br["stale"] = False
-
-    sdir = "up" if spread >= OTC_SPREAD_GATE else ("down" if spread <= -OTC_SPREAD_GATE else "mid")
-    if br and not br["stale"]:
-        bdir = ("wide" if br["ratio"] >= OTC_BREADTH_HI else
-                "thin" if br["ratio"] <= OTC_BREADTH_LO else "mid")
-    else:
-        bdir = None
-
-    if sdir == "mid":
-        code, title, how = ("flat", "與大盤同步",
-                            f"櫃買與加權的漲跌差距只有 {spread:+.2f} 個百分點，"
-                            f"在 ±{OTC_SPREAD_GATE} 的日常擺動範圍內，看不出資金特別偏向哪一邊。")
-    elif bdir is None or bdir == "mid":
-        strong = spread > 0
-        code = "hot" if strong else "cold"
-        title = "中小型股偏強" if strong else "中小型股偏弱"
-        tail = ("；廣度在中性帶，看不出是普漲普跌還是少數股在動"
-                if bdir == "mid" else "；今日無廣度資料，只憑指數強弱判讀")
-        how = (f"櫃買比大盤{'強' if strong else '弱'} {abs(spread):.2f} 個百分點{tail}。")
-    else:
-        code, title, how = OTC_VERDICT[(sdir, bdir)]
-
-    return {"otc": otc, "twse": twse, "spread": spread, "br": br, "live": live,
-            "code": code, "title": title, "how": how}
-
-
-def render_otc(page):
-    """櫃買體溫卡：兩個指數對照 + 強弱條 + 廣度條 + 一句白話結論。
-
-    刻意不做成分頁：櫃買跟選擇權到期別無關，三個分頁看到的都該是同一份。
+    刻意不做成分頁：全市場廣度跟選擇權到期別無關，三個分頁該看到同一份。
+    預設 hidden，抓到資料才顯示 —— 讀不到 Worker 時整張卡不出現，
+    不要在頁面最上面留一個空框讓人以為是壞掉。
     """
-    o = page.get("otc")
-    if not o:
-        return ""
-    otc, twse, sp, br = o["otc"], o["twse"], o["spread"], o["br"]
-
-    # 強弱條：中央為 0，往右紅＝櫃買強、往左綠＝櫃買弱（台股慣例）
-    w    = min(abs(sp) / OTC_SPREAD_FULL, 1.0) * 50
-    left = 50 - w if sp < 0 else 50
-    scls = "up" if sp > 0 else ("down" if sp < 0 else "mid")
-
-    def pc(v):
-        cls = "up" if v > 0 else ("down" if v < 0 else "mid")
-        return f'<span class="opc {cls}">{v:+.2f}%</span>'
-
-    amp = (f'　·　今日振幅 {otc["amp"]:.2f}%' if otc.get("amp") else "")
-    tag = ('<span class="olive">盤中</span>' if o["live"]
-           else f'<span class="oclosed">已收盤 {otc["date"][4:6]}/{otc["date"][6:8]}</span>')
-
-    if br and not br["stale"]:
-        tot = max(br["up"] + br["down"] + br["flat"], 1)
-        up_w, dn_w = br["up"] / tot * 100, br["down"] / tot * 100
-        lim = ""
-        if br["lu"] or br["ld"]:
-            lim = (f'　·　漲停 <b class="up">{br["lu"]}</b>　跌停 <b class="down">{br["ld"]}</b>')
-        # 「每 10 檔有幾檔在漲」比 19.6% 這種數字好懂得多
-        per10 = br["up"] / (br["up"] + br["down"]) * 10
-        # 條上那條白線就是 50%；這句話是它的文字版，兩者要說同一件事
-        half = ("上漲家數過半" if br["ratio"] > 0.5 else
-                "下跌家數過半" if br["ratio"] < 0.5 else "漲跌家數各半")
-        bhtml = f'''<div class="orow">
-    <div class="olab">上櫃漲跌家數<small>每 10 檔約 {per10:.0f} 檔在漲</small></div>
-    <div class="obar breadth">
-      <span class="bup" style="width:{up_w:.1f}%"></span>
-      <span class="bfl" style="width:{100 - up_w - dn_w:.1f}%"></span>
-      <span class="bdn" style="width:{dn_w:.1f}%"></span>
-    </div>
-    <div class="oend"><b class="up">{br["up"]}</b> 漲 / <b class="down">{br["down"]}</b> 跌{lim}
-      <span class="ohalf">{half}</span></div>
-  </div>'''
-    else:
-        why = "資料非今日，不採用" if (br and br["stale"]) else "抓取失敗"
-        bhtml = f'<div class="orow"><div class="olab">上櫃漲跌家數</div>' \
-                f'<div class="oend thin">無資料（{why}）</div></div>'
-
-    return f'''<div class="otc {o["code"]}">
-  <div class="oh">櫃買體溫<small>中小型股</small><span class="oq">{o["title"]}</span>{tag}</div>
-  <div class="onums">
-    <div class="on"><span class="onl">櫃買指數</span><b>{otc["px"]:,.2f}</b>{pc(otc["chg"])}</div>
-    <div class="on"><span class="onl">加權指數</span><b>{twse["px"]:,.0f}</b>{pc(twse["chg"])}</div>
-    <div class="on"><span class="onl">櫃買比大盤</span><b class="{scls}">{sp:+.2f}</b>
-      <span class="onu">個百分點</span></div>
+    return '''<div class="dk" id="dk" hidden>
+  <div class="dkh">盤中多空空間<small>全市場家數</small>
+    <span class="dkq" id="dkq">—</span>
+    <span class="dkd" id="dkd"></span>
+    <a class="dka" href="__URL__" target="_blank" rel="noopener">完整判讀 ↗</a>
   </div>
-  <div class="orow">
-    <div class="olab">相對強弱<small>櫃買 − 加權<br>左弱右強・滿格 ±{OTC_SPREAD_FULL:.0f}pp</small></div>
-    <div class="obar spread"><i></i>
-      <span class="sfill {scls}" style="left:{left:.1f}%;width:{w:.1f}%"></span>
-    </div>
-    <div class="oend">櫃買{'強' if sp > 0 else '弱'}於大盤 {abs(sp):.2f}pp{amp}</div>
-  </div>
-  {bhtml}
-  <div class="ohow">{o["how"]}</div>
-  <div class="onote">櫃買沒有選擇權、沒有官方 VIX、櫃買期貨日成交 0 口，
-    所以上面那套 OI 牆／P-C 比在櫃買讀不到，這裡改用現貨側的相對強弱與廣度。
-    相對強弱是<b>單純相減、未做 beta 調整</b>（櫃買波動天生比加權大，同向時本來就會有落差）。
-    <b>此卡未經回測，只描述現在盤面長什麼樣，不是進出場訊號。</b></div>
-</div>'''
-
+  <div class="dkwrap"><canvas id="dkcv"></canvas></div>
+  <div class="dkfact" id="dkfact"></div>
+  <div class="dkkpis" id="dkkpi"></div>
+  <div class="dknote">紅綠棒＝<b>多空空間</b>（上漲家數 − 下跌家數），
+    黃線＝<b>快動能</b>（減前 30 分鐘均值），藍階＝<b>慢動能</b>（減前 100 分鐘均值）。
+    每 5 分鐘一根，與本頁的選擇權報價各自獨立更新。<b>未經回測，不是進出場訊號。</b></div>
+</div>'''.replace("__URL__", DUOKONG_URL)
 
 
 # ── 5. HTML 產出 ─────────────────────────────────────────────────────────────
@@ -1341,6 +1137,179 @@ def render_panel(rep):
 
 # 分頁切換：按鈕控制哪一個 panel 顯示，選擇存 localStorage，
 # 這樣每 60 秒自動重整回來時還停在原本看的那一頁。
+DUOKONG_JS = """
+<script>
+/* 盤中多空空間卡：跟 Cloudflare Worker 要一份 KV 快照，在瀏覽器端算兩條線並畫圖。
+   為什麼放前端：掃全市場一輪 20 秒，本頁的請求扛不住（見 4.9 節註解）。
+   抓不到就整張卡不顯示 —— 頁面最上面留一個空框比沒有這張卡更糟。 */
+(function(){
+  var API  = '__URL__/api/day';
+  var 快   = 6;      // 黃線：多空空間 − 前 6 根（30 分鐘）均值
+  var 慢   = 20;     // 藍線：多空空間 − 前 20 根（100 分鐘）均值
+  var 階   = 150;    // 藍線每 150 家跳一階，夾在 ±200
+  var 全格 = 54;     // 09:00~13:30 共 54 格。x 軸永遠鋪滿一整天，
+                     // 盤中資料一根根長出來時比例才不會一直跳動。
+
+  var box = document.getElementById('dk'), cv = document.getElementById('dkcv');
+  if(!box || !cv) return;
+  var rows = [], 布局 = null;
+
+  function 色(k){ return getComputedStyle(document.documentElement).getPropertyValue(k).trim(); }
+  function 簽(v){ return (v > 0 ? '+' : '') + Math.round(v).toLocaleString('en-US'); }
+
+  /* 家數 − 前 k 根（含當根）移動平均。去趨勢後線講的是動能不是水位。 */
+  function 離均差(s, k){
+    return s.map(function(_, i){
+      var seg = s.slice(Math.max(0, i - k + 1), i + 1);
+      var m = 0; seg.forEach(function(v){ m += v; });
+      return s[i] - m / seg.length;
+    });
+  }
+
+  function 算三線(rs){
+    var s = rs.map(function(r){ return r.s; });
+    var f = 離均差(s, 快), w = 離均差(s, 慢);
+    rs.forEach(function(r, i){
+      r.y = Math.round(f[i]);
+      r.b = Math.max(-2, Math.min(2, Math.round(w[i] / 階))) * 100;
+    });
+    return rs;
+  }
+
+  function 畫(){
+    var dpr = window.devicePixelRatio || 1;
+    var W = cv.parentNode.clientWidth || 320, H = 152;
+    cv.width = W * dpr; cv.height = H * dpr;
+    var c = cv.getContext('2d'); c.setTransform(dpr, 0, 0, dpr, 0, 0);
+    c.clearRect(0, 0, W, H);
+    if(!rows.length) return;
+
+    var L = 36, R = 6, T = 8, B = 18, pw = W - L - R, ph = H - T - B;
+    var vals = [0];
+    rows.forEach(function(r){ vals.push(r.s, r.y, r.b); });
+    var mx = Math.max.apply(null, vals), mn = Math.min.apply(null, vals);
+    var pad = (mx - mn) * 0.08 || 50; mx += pad; mn -= pad;
+    var step = pw / 全格;
+    var X = function(i){ return L + step * (i + 0.5); };
+    var Y = function(v){ return T + ph * (mx - v) / (mx - mn); };
+    布局 = { L: L, step: step, X: X };
+
+    c.strokeStyle = 色('--line'); c.lineWidth = 1;
+    [200, -200].forEach(function(v){
+      if(v > mx || v < mn) return;
+      c.setLineDash([4, 4]); c.beginPath();
+      c.moveTo(L, Y(v)); c.lineTo(W - R, Y(v)); c.stroke(); c.setLineDash([]);
+    });
+
+    var bw = Math.max(step * 0.62, 1.6);
+    rows.forEach(function(r, i){
+      c.fillStyle = r.s >= 0 ? 色('--call') : 色('--put');
+      var y0 = Y(0), y1 = Y(r.s);
+      c.fillRect(X(i) - bw / 2, Math.min(y0, y1), bw, Math.max(Math.abs(y1 - y0), 1));
+    });
+
+    c.strokeStyle = 色('--ink'); c.lineWidth = 1.2;
+    c.beginPath(); c.moveTo(L, Y(0)); c.lineTo(W - R, Y(0)); c.stroke();
+
+    c.strokeStyle = '#d8a13a'; c.lineWidth = 2; c.lineJoin = 'round'; c.beginPath();
+    rows.forEach(function(r, i){ i ? c.lineTo(X(i), Y(r.y)) : c.moveTo(X(i), Y(r.y)); });
+    c.stroke();
+
+    /* 藍線畫成階梯：它本來就是離散的四階，畫成斜線會看起來像連續值。 */
+    c.strokeStyle = '#4a8fe0'; c.lineWidth = 2.4; c.beginPath();
+    rows.forEach(function(r, i){
+      var x0 = X(i) - step / 2, x1 = X(i) + step / 2, yy = Y(r.b);
+      i ? c.lineTo(x0, yy) : c.moveTo(x0, yy);
+      c.lineTo(x1, yy);
+    });
+    c.stroke();
+
+    c.fillStyle = 色('--muted'); c.font = '10px -apple-system'; c.textAlign = 'right';
+    [mx, 0, mn].forEach(function(v){ c.fillText(Math.round(v), L - 5, Y(v) + 3); });
+    c.textAlign = 'center';
+    for(var m = 540, i = 0; m <= 805; m += 5, i++){
+      if(i % 6) continue;
+      var lab = ('0' + Math.floor(m / 60)).slice(-2) + ':' + ('0' + (m % 60)).slice(-2);
+      c.fillText(lab, L + step * (i + 0.5), H - 5);
+    }
+  }
+
+  function 台北日(){
+    var t = new Date(Date.now() + (new Date().getTimezoneOffset() * 60000) + 8 * 3600000);
+    return '' + t.getFullYear() + ('0' + (t.getMonth() + 1)).slice(-2) + ('0' + t.getDate()).slice(-2);
+  }
+
+  function 渲染(day){
+    rows = 算三線((day && day.rows) || []);
+    if(!rows.length) return;                    // 開盤前／連假：整張卡不出現
+    box.hidden = false;
+
+    var 末 = rows[rows.length - 1];
+    box.className = 'dk ' + (末.s >= 0 ? 'up' : 'down');
+    document.getElementById('dkq').textContent = 簽(末.s);
+
+    var d = day.date || '';
+    var 當天 = (d === 台北日());
+    document.getElementById('dkd').textContent =
+      d.slice(4, 6) + '/' + d.slice(6) + ' ' + (末.t || '') +
+      (day.updated ? '（更新 ' + day.updated + '）' : '') +
+      (當天 ? '' : '　最近交易日');
+
+    var hi = 0, lo = 0, 紅 = 0, 綠 = 0;
+    rows.forEach(function(r, i){
+      if(r.s > rows[hi].s) hi = i;
+      if(r.s < rows[lo].s) lo = i;
+      if(r.s > 0) 紅++; else if(r.s < 0) 綠++;
+    });
+    document.getElementById('dkfact').innerHTML =
+      '日內最強 <b>' + rows[hi].t + ' ' + 簽(rows[hi].s) + '</b>　最弱 <b>' + rows[lo].t + ' ' +
+      簽(rows[lo].s) + '</b>　紅棒 <b>' + 紅 + '</b> 根／綠棒 <b>' + 綠 + '</b> 根　掃描池 ' +
+      (day.pool || '?') + ' 檔';
+
+    function 格(k, v, cls){
+      return '<div class="dks"><span class="l">' + k + '</span><b class="' + (cls || '') +
+             '">' + v + '</b></div>';
+    }
+    document.getElementById('dkkpi').innerHTML =
+      格('多空空間', 簽(末.s), 末.s >= 0 ? 'up' : 'down') +
+      格('上漲 / 下跌', 末.up + ' / ' + 末.dn, 'dim') +
+      格('快動能', 簽(末.y), 末.y >= 0 ? 'up' : 'down') +
+      格('慢動能', 簽(末.b), 末.b >= 0 ? 'up' : 'down') +
+      格('這 5 分成交', (末.amt || 0).toLocaleString('en-US') + ' 億', 'dim');
+
+    畫();
+  }
+
+  /* 點圖看某一根的數字。手機上沒有 hover，點擊是唯一能讀出單根數值的方式。 */
+  cv.addEventListener('click', function(e){
+    if(!布局 || !rows.length) return;
+    var r = cv.getBoundingClientRect();
+    var i = Math.round((e.clientX - r.left - 布局.L) / 布局.step - 0.5);
+    var row = rows[i];
+    if(!row) return;
+    document.getElementById('dkfact').innerHTML =
+      '<b>' + row.t + '</b>　多空空間 <b>' + 簽(row.s) + '</b>（漲 ' + row.up + ' / 跌 ' + row.dn +
+      '）　快動能 <b>' + 簽(row.y) + '</b>　慢動能 <b>' + 簽(row.b) + '</b>　這 5 分 ' +
+      (row.amt || 0).toLocaleString('en-US') + ' 億';
+  });
+
+  function 載入(){
+    fetch(API, { cache: 'no-store' })
+      .then(function(r){ return r.json(); })
+      .then(渲染)
+      .catch(function(){});                     // 讀不到就維持隱藏，不影響選擇權主表
+  }
+
+  載入();
+  /* 本頁 60 秒會整頁重整，但使用者常常把頁面切到背景，重整不一定準時發生；
+     卡片自己也每 60 秒重抓一次，圖才會真的自己往前長。 */
+  setInterval(載入, 60000);
+  window.addEventListener('resize', 畫);
+})();
+</script>
+""".replace("__URL__", DUOKONG_URL)
+
+
 TAB_JS = """
 <script>
 (function(){
@@ -1502,65 +1471,42 @@ thead th{{position:sticky;top:0;background:var(--panel);color:var(--muted);font-
 .tab.on{{background:var(--ink);color:var(--bg);border-color:var(--ink)}}
 .sub-tab{{margin:0 2px 4px}}
 .panel{{display:none}} .panel.on{{display:block}}
-/* 櫃買體溫卡：櫃買沒有選擇權可讀，改用現貨側的相對強弱＋廣度。
-   放在分頁之外，因為它跟到期別無關，三個分頁看到的都該是同一份。 */
-.otc{{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--muted);
+/* 盤中多空空間卡：全市場家數的三條線。放在分頁之外，因為它跟到期別無關，
+   三個分頁看到的都該是同一份。內容全由 DUOKONG_JS 在瀏覽器端填（見 4.9 節註解）。 */
+.dk{{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--muted);
   border-radius:10px;padding:12px 14px;margin:12px 0 4px}}
-.otc.hot{{border-left-color:var(--call)}} .otc.cold{{border-left-color:var(--put)}}
-.otc.narrow,.otc.rotate{{border-left-color:#d8b24a}}
-.oh{{font-size:12px;font-weight:700;color:var(--muted);letter-spacing:.4px}}
-.oh small{{font-size:10px;font-weight:500;margin-left:5px;opacity:.75}}
-.oq{{color:var(--ink);font-size:16px;margin-left:9px;letter-spacing:0}}
-.otc.hot .oq{{color:var(--call)}} .otc.cold .oq{{color:var(--put)}}
-.otc.narrow .oq,.otc.rotate .oq{{color:#c99a1e}}
-.olive,.oclosed{{font-size:10px;font-weight:600;margin-left:8px;padding:1px 6px;border-radius:999px;
-  border:1px solid var(--line);color:var(--muted);vertical-align:2px}}
-.olive{{color:#e0392b;border-color:#e0392b66}}
-.onums{{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:10px 0 4px}}
-@media(max-width:640px){{.onums{{grid-template-columns:1fr 1fr}}
-  .on:last-child{{grid-column:1/-1;padding-top:2px;border-top:1px solid var(--hair)}}}}
-.on{{display:flex;align-items:baseline;gap:6px;flex-wrap:wrap}}
-.onl{{font-size:10.5px;color:var(--muted);min-width:56px}}
-.on b{{font-size:17px;font-weight:700}}
-.onu{{font-size:10px;color:var(--muted)}}
-.opc{{font-size:12.5px;font-weight:600}}
-.otc .up{{color:var(--call)}} .otc .down{{color:var(--put)}} .otc .mid{{color:var(--muted)}}
-/* 一行 = 標籤 + 條 + 右側白話。手機上條會自己換行到整寬。 */
-.orow{{display:grid;grid-template-columns:104px 1fr auto;align-items:center;gap:10px;
-  margin:9px 0;font-size:11.5px}}
-@media(max-width:640px){{.orow{{grid-template-columns:1fr;gap:4px}}}}
-.olab{{color:var(--muted);font-size:10.5px;line-height:1.35}}
-.olab small{{display:block;font-size:9.5px;opacity:.8}}
-.obar{{position:relative;height:12px;border-radius:999px;overflow:hidden;background:var(--hair);
-  display:flex;min-width:120px}}
-/* 強弱條：中線為 0，往右紅＝櫃買強、往左綠＝櫃買弱。
-   底色先用極淡的綠→紅打底，這樣即使填色只有一小段，也看得出左右各代表什麼。 */
-.obar.spread{{background:linear-gradient(90deg,
-  color-mix(in srgb,var(--put) 16%,var(--hair)) 0%,var(--hair) 42%,
-  var(--hair) 58%,color-mix(in srgb,var(--call) 16%,var(--hair)) 100%)}}
-.obar.spread i{{position:absolute;left:50%;top:-1px;bottom:-1px;width:2px;margin-left:-1px;
-  background:var(--muted);opacity:.55;z-index:3}}
-/* 廣度條的 50% 標線：有沒有過半是這條的重點，沒有刻度就只是一條彩色長條 */
-.obar.breadth::after{{content:"";position:absolute;left:50%;top:-1px;bottom:-1px;width:2px;
-  margin-left:-1px;background:var(--panel);opacity:.85;z-index:3}}
-.sfill{{position:absolute;top:0;bottom:0;border-radius:999px}}
-.sfill.up{{background:var(--call)}} .sfill.down{{background:var(--put)}}
-.sfill.mid{{background:var(--muted)}}
-/* 廣度條：紅（漲）／灰（平）／綠（跌），寬度就是家數佔比 */
-.breadth .bup{{background:var(--call)}} .breadth .bdn{{background:var(--put)}}
-.breadth .bfl{{background:var(--line)}}
-.oend{{font-size:11px;color:var(--muted);white-space:nowrap}}
-.oend b{{font-size:12.5px;font-weight:700}}
-.oend.thin{{opacity:.7}}
-.ohalf{{display:block;font-size:10px;opacity:.85}}
-.ohow{{font-size:12.5px;line-height:1.7;padding-top:9px;margin-top:4px;border-top:1px solid var(--hair)}}
-.onote{{color:var(--muted);font-size:10.5px;margin-top:8px;padding-top:7px;
+.dk.up{{border-left-color:var(--call)}} .dk.down{{border-left-color:var(--put)}}
+.dkh{{font-size:12px;font-weight:700;color:var(--muted);letter-spacing:.4px;
+  display:flex;align-items:baseline;flex-wrap:wrap;gap:0 8px}}
+.dkh small{{font-size:10px;font-weight:500;opacity:.75;margin-left:-4px}}
+.dkq{{color:var(--ink);font-size:17px;letter-spacing:0}}
+.dk.up .dkq{{color:var(--call)}} .dk.down .dkq{{color:var(--put)}}
+.dkd{{font-size:10.5px;font-weight:500;color:var(--muted)}}
+.dka{{margin-left:auto;font-size:11px;font-weight:600;color:var(--muted);text-decoration:none;
+  border:1px solid var(--line);border-radius:999px;padding:2px 9px;white-space:nowrap}}
+.dka:hover{{color:var(--ink);border-color:var(--muted)}}
+/* 圖高度寫死 152px：手機直放時再高就把下面的表格擠出畫面外，
+   而這張卡的角色是「一眼看今天的骨架」，不是拿來細看的主圖。 */
+.dkwrap{{position:relative;height:152px;margin:8px 0 2px}}
+#dkcv{{width:100%;height:152px;display:block;touch-action:manipulation}}
+.dkfact{{font-size:11.5px;color:var(--muted);line-height:1.7;min-height:20px}}
+.dkfact b{{color:var(--ink);font-weight:600}}
+/* 數字列刻意不用頁面上那組 .kpi 方塊：這張卡是最上面的附掛讀數，
+   五個方塊在手機上要吃掉三列高度，會把主角（T 字表）擠出第一屏。 */
+.dkkpis{{display:flex;flex-wrap:wrap;gap:5px 18px;margin:9px 0 0;
+  padding-top:8px;border-top:1px solid var(--hair)}}
+.dks{{display:flex;align-items:baseline;gap:6px}}
+.dks .l{{font-size:10.5px;color:var(--muted)}}
+.dks b{{font-size:15px;font-weight:700}}
+.dks b.up{{color:var(--call)}} .dks b.down{{color:var(--put)}}
+.dks b.dim{{color:var(--ink);font-weight:600;font-size:14px}}
+.dknote{{color:var(--muted);font-size:10.5px;margin-top:9px;padding-top:7px;
   border-top:1px solid var(--hair);line-height:1.65}}
 </style>
 <div class="wrap" data-gen="{page["now"]}" data-epoch="{page["epoch"]}">
 <h1>台指選擇權即時 T 字報價</h1>
 <div class="sub"><span class="dot"></span>{sess_txt}　·　標的 {page["under"]:,.0f}（{page["usrc"]}）　·　產生 {page["now"]}　·　<span id="age">—</span></div>
-{render_otc(page)}
+{render_duokong()}
 <div class="tabs">
   {tabs_html}
 </div>
@@ -1599,10 +1545,19 @@ thead th{{position:sticky;top:0;background:var(--panel);color:var(--muted);font-
   切換後的選擇會記住，自動重整不會跳回去。<b>下週三</b>是還沒進入結算週的部位，
   量通常只有本週的零頭，牆的位置常是先卡好的初始陣地，看的是下一段的區間預期，
   不要拿來當今天的當沖依據；量能不足時撐壓會自動擋掉不顯示。<br>
+  <b>盤中多空空間</b>（最上面那張卡）：全市場約 2,700 檔的即時報價壓成三條線 ——
+  紅綠棒是<b>上漲家數 − 下跌家數</b>（狀態量），黃藍兩線是同一個數字減掉自己前 30 分鐘／
+  前 100 分鐘的移動平均。<b>兩條線刻意做成去趨勢</b>：直接畫水位跟紅綠棒的相關性 r=+0.88，
+  等於把同一件事畫兩次；減掉自己的均線之後，線講的才是「相對於剛才是在加速還是退潮」。
+  藍線離散成 ±100／±200 四階，因為大型股本來就黏，階梯化之後「中期力道站哪邊」才一眼可讀。
+  資料來自另一支常駐 Cloudflare 的 Worker（cron 每 5 分鐘掃一輪存進 KV），
+  瀏覽器直接向它拿，所以<b>這張卡的新舊跟本頁的產生時間無關</b>，它自己每 60 秒重抓一次；
+  Worker 掛掉時整張卡不顯示，不影響下面的選擇權報價。點卡片右上角可以進到完整版看型態判讀。
+  台指選擇權讀的是「錢押在哪個價位」，這張卡讀的是「多少家公司站在多方」，兩者互為補充。<br>
   <b>限制</b>：OI 為期交所盤後公布，盤中沿用前一日；成交金額只知道成交，不知道那一口是新倉還是平倉，
   所以「築牆」是傾向推論而非事實。此表為 TAIFEX MIS 約每 5 秒的準即時報價，非逐筆。
 </div>
-</div>''' + TAB_JS + DELTA_JS
+</div>''' + TAB_JS + DELTA_JS + DUOKONG_JS
 
 
 # ── 6. ntfy 推播 ─────────────────────────────────────────────────────────────
