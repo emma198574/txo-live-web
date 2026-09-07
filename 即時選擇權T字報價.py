@@ -1191,6 +1191,19 @@ DUOKONG_JS = """
 
   function 錢簽(v){ return (v === null || v === undefined) ? '—' : (v > 0 ? '+' : '') + v.toFixed(2); }
 
+  /* 涵蓋率＝這一輪 MIS 回了幾筆 ÷ 掃描池。抓取失敗在 Worker 那邊是靜默的
+     （回空陣列、家數變小、線照畫），2026-09-07 盤中每格只掃到 55~130 檔卻毫無異狀，
+     兩天後對圖才發現。所以卡片一定要把涵蓋率講出來。
+     rt 是 2026-09-07 之後才存的，舊資料只能退回用有效家數估、門檻放寬。 */
+  function 算涵蓋(rs, day){
+    rs.forEach(function(r){
+      var 池 = r.pl || day.pool || 0;
+      r.舊 = (r.rt === null || r.rt === undefined);
+      r.cov = 池 ? (r.舊 ? r.n / 池 : r.rt / 池) : null;
+      r.缺 = (r.cov !== null) && (r.cov < (r.舊 ? 0.5 : 0.9));
+    });
+  }
+
   function 畫(){
     var dpr = window.devicePixelRatio || 1;
     var W = cv.parentNode.clientWidth || 320, H = 152;
@@ -1218,10 +1231,12 @@ DUOKONG_JS = """
 
     var bw = Math.max(step * 0.62, 1.6);
     rows.forEach(function(r, i){
+      c.globalAlpha = r.缺 ? 0.28 : 1;           // 殘值的格子畫淡，不要跟正常的混在一起
       c.fillStyle = r.s >= 0 ? 色('--call') : 色('--put');
       var y0 = Y(0), y1 = Y(r.s);
       c.fillRect(X(i) - bw / 2, Math.min(y0, y1), bw, Math.max(Math.abs(y1 - y0), 1));
     });
+    c.globalAlpha = 1;
 
     c.strokeStyle = 色('--ink'); c.lineWidth = 1.2;
     c.beginPath(); c.moveTo(L, Y(0)); c.lineTo(W - R, Y(0)); c.stroke();
@@ -1271,6 +1286,7 @@ DUOKONG_JS = """
   function 渲染(day){
     rows = 算三線((day && day.rows) || []);
     if(!rows.length) return;                    // 開盤前／連假：整張卡不出現
+    算涵蓋(rows, day || {});
     box.hidden = false;
 
     var 末 = rows[rows.length - 1];
@@ -1294,10 +1310,17 @@ DUOKONG_JS = """
       if(r.s < rows[lo].s) lo = i;
       if(r.s > 0) 紅++; else if(r.s < 0) 綠++;
     });
-    document.getElementById('dkfact').innerHTML =
+    var 缺數 = 0;
+    rows.forEach(function(r){ if(r.缺) 缺數++; });
+    var 警 = 缺數 > rows.length * 0.2
+      ? '<b style="color:#d1544f">⚠ ' + 缺數 + '/' + rows.length +
+        ' 格沒掃完整，家數偏小、線失真，別照這張判讀</b>　' : '';
+    document.getElementById('dkfact').innerHTML = 警 +
       '日內最強 <b>' + rows[hi].t + ' ' + 簽(rows[hi].s) + '</b>　最弱 <b>' + rows[lo].t + ' ' +
       簽(rows[lo].s) + '</b>　紅棒 <b>' + 紅 + '</b> 根／綠棒 <b>' + 綠 + '</b> 根　掃描池 ' +
-      (day.pool || '?') + ' 檔';
+      (day.pool || '?') + ' 檔' +
+      (末.cov !== null && 末.cov !== undefined
+        ? '　本格涵蓋 <b>' + Math.round(末.cov * 100) + '%</b>' : '');
 
     function 格(k, v, cls){
       return '<div class="dks"><span class="l">' + k + '</span><b class="' + (cls || '') +
@@ -1323,7 +1346,9 @@ DUOKONG_JS = """
     document.getElementById('dkfact').innerHTML =
       '<b>' + row.t + '</b>　多空空間 <b>' + 簽(row.s) + '</b>（漲 ' + row.up + ' / 跌 ' + row.dn +
       '）　快動能 <b>' + 簽(row.y) + '</b>　主力錢 <b>' + 錢簽(row.b) + '</b>　這 5 分 ' +
-      (row.amt || 0).toLocaleString('en-US') + ' 億';
+      (row.amt || 0).toLocaleString('en-US') + ' 億' +
+      (row.cov !== null && row.cov !== undefined
+        ? '　涵蓋 ' + Math.round(row.cov * 100) + '%' + (row.缺 ? '（這格不可信）' : '') : '');
   });
 
   function 載入(){
