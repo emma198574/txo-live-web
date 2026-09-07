@@ -771,8 +771,19 @@ def build_page(radius=1500):
 # 三條線的定義（與 分析_盤中多空空間.py、盤中多空空間App/public/app.js 一致）：
 #   多空空間（紅綠棒）＝上漲家數 − 下跌家數
 #   快動能（黃線）    ＝多空空間 − 前 6 根（30 分鐘）移動平均
-#   慢動能（藍線）    ＝多空空間 − 前 20 根（100 分鐘）移動平均，
-#                      每 150 家跳一階、夾在 ±200
+#   主力錢（藍線）    ＝成交額前 100 大的買賣方向淨值（−1~+1），走右軸
+#
+# 藍線本來是「多空空間 − 前 20 根均線、切成 ±100／±200 四階」，2026-09-07 換掉：
+# 那天加權指數 +775 點（+1.67%）、家數卻 −419，是典型的權值撐、中小股殺；
+# 舊公式跟紅綠棒同一個來源（家數的衍生量），在單邊下跌的家數序列上數學上
+# 不可能為正，整天貼在 0 以下，等於把紅綠棒的事又講一次。
+# 主力錢是**另一個來源**（錢，不是家數），那天 54 格全部為正 —— 家數在賣、
+# 大錢在買，這是紅綠棒講不出來的。三天實測（09-03、09-04 同向，09-07 背離）
+# 也確認：同向的日子它不帶新資訊，有價值的是兩邊分岔的時候。
+# 另外實測錢對家數變化**沒有領先性**（最高相關落在同一格），不要當提前訊號用。
+#
+# ※ 這裡是先行試用：本機 分析_盤中多空空間.py 與 盤中多空空間App/public/app.js
+#   的藍線還是舊定義，確認好用之後再一起同步過去。
 #
 # 這張卡**刻意不搬型態判讀過來**（開盤衰竭、反彈品質、背離那一整套）。
 # 那些規則現在已經有本機 Python 與 App 前端兩份要同步，再多一份必然走針。
@@ -797,7 +808,8 @@ def render_duokong():
   <div class="dkfact" id="dkfact"></div>
   <div class="dkkpis" id="dkkpi"></div>
   <div class="dknote">紅綠棒＝<b>多空空間</b>（上漲家數 − 下跌家數），
-    黃線＝<b>快動能</b>（減前 30 分鐘均值），藍階＝<b>慢動能</b>（減前 100 分鐘均值）。
+    黃線＝<b>快動能</b>（減前 30 分鐘均值），藍線＝<b>主力錢</b>（成交額前 100 大的買賣方向，
+    右軸 −1~+1）。<b>家數在零軸下、藍線在零軸上</b>＝個股在跌但大錢在買。
     每 5 分鐘一根，與本頁的選擇權報價各自獨立更新。<b>未經回測，不是進出場訊號。</b></div>
 </div>'''.replace("__URL__", DUOKONG_URL)
 
@@ -1145,8 +1157,7 @@ DUOKONG_JS = """
 (function(){
   var API  = '__URL__/api/day';
   var 快   = 6;      // 黃線：多空空間 − 前 6 根（30 分鐘）均值
-  var 慢   = 20;     // 藍線：多空空間 − 前 20 根（100 分鐘）均值
-  var 階   = 150;    // 藍線每 150 家跳一階，夾在 ±200
+                     // 藍線＝Worker 回傳的 bmv（主力錢投票，−1~+1），不需要參數
   var 全格 = 54;     // 09:00~13:30 共 54 格。x 軸永遠鋪滿一整天，
                      // 盤中資料一根根長出來時比例才不會一直跳動。
 
@@ -1166,15 +1177,19 @@ DUOKONG_JS = """
     });
   }
 
+  /* 藍線直接用 Worker 存好的 bmv（成交額前 100 大的買賣方向淨值）。
+     收盤 13:30 那一格沒有成交額增量、bmv 會是 null，畫線時要斷開不能當 0。 */
   function 算三線(rs){
     var s = rs.map(function(r){ return r.s; });
-    var f = 離均差(s, 快), w = 離均差(s, 慢);
+    var f = 離均差(s, 快);
     rs.forEach(function(r, i){
       r.y = Math.round(f[i]);
-      r.b = Math.max(-2, Math.min(2, Math.round(w[i] / 階))) * 100;
+      r.b = (r.bmv === null || r.bmv === undefined) ? null : r.bmv;
     });
     return rs;
   }
+
+  function 錢簽(v){ return (v === null || v === undefined) ? '—' : (v > 0 ? '+' : '') + v.toFixed(2); }
 
   function 畫(){
     var dpr = window.devicePixelRatio || 1;
@@ -1184,9 +1199,9 @@ DUOKONG_JS = """
     c.clearRect(0, 0, W, H);
     if(!rows.length) return;
 
-    var L = 36, R = 6, T = 8, B = 18, pw = W - L - R, ph = H - T - B;
+    var L = 36, R = 24, T = 8, B = 18, pw = W - L - R, ph = H - T - B;
     var vals = [0];
-    rows.forEach(function(r){ vals.push(r.s, r.y, r.b); });
+    rows.forEach(function(r){ vals.push(r.s, r.y); });   // 錢走右軸，不參與家數的軸範圍
     var mx = Math.max.apply(null, vals), mn = Math.min.apply(null, vals);
     var pad = (mx - mn) * 0.08 || 50; mx += pad; mn -= pad;
     var step = pw / 全格;
@@ -1215,18 +1230,32 @@ DUOKONG_JS = """
     rows.forEach(function(r, i){ i ? c.lineTo(X(i), Y(r.y)) : c.moveTo(X(i), Y(r.y)); });
     c.stroke();
 
-    /* 藍線畫成階梯：它本來就是離散的四階，畫成斜線會看起來像連續值。 */
-    c.strokeStyle = '#4a8fe0'; c.lineWidth = 2.4; c.beginPath();
+    /* 藍線＝主力錢投票，−1~+1 的連續值，走右軸。
+       兩個軸的 0 刻意對齊：這樣「家數在零軸下、錢在零軸上」一眼就分得出來，
+       那正是這條線唯一比紅綠棒多講的東西。 */
+    var Y0 = Y(0);
+    var YB = function(v){
+      var u = Math.max(-1, Math.min(1, v));
+      return u >= 0 ? Y0 - (Y0 - T) * u : Y0 + (T + ph - Y0) * (-u);
+    };
+    c.strokeStyle = '#4a8fe0'; c.lineWidth = 2.4; c.lineJoin = 'round'; c.beginPath();
+    var 斷 = true;
     rows.forEach(function(r, i){
-      var x0 = X(i) - step / 2, x1 = X(i) + step / 2, yy = Y(r.b);
-      i ? c.lineTo(x0, yy) : c.moveTo(x0, yy);
-      c.lineTo(x1, yy);
+      if(r.b === null){ 斷 = true; return; }       // 收盤那格沒有 bmv，斷開別接成假的直線
+      var yy = YB(r.b);
+      斷 ? c.moveTo(X(i), yy) : c.lineTo(X(i), yy);
+      斷 = false;
     });
     c.stroke();
 
     c.fillStyle = 色('--muted'); c.font = '10px -apple-system'; c.textAlign = 'right';
     [mx, 0, mn].forEach(function(v){ c.fillText(Math.round(v), L - 5, Y(v) + 3); });
-    c.textAlign = 'center';
+    /* 右軸只標 +1／0／−1 三格：卡片高度只有 152px，標多了反而看不清楚 */
+    c.fillStyle = '#4a8fe0'; c.textAlign = 'left';
+    [[1, '+1'], [0, '0'], [-1, '-1']].forEach(function(z){
+      c.fillText(z[1], W - R + 3, YB(z[0]) + 3);
+    });
+    c.fillStyle = 色('--muted'); c.textAlign = 'center';
     for(var m = 540, i = 0; m <= 805; m += 5, i++){
       if(i % 6) continue;
       var lab = ('0' + Math.floor(m / 60)).slice(-2) + ':' + ('0' + (m % 60)).slice(-2);
@@ -1245,6 +1274,10 @@ DUOKONG_JS = """
     box.hidden = false;
 
     var 末 = rows[rows.length - 1];
+    /* 收盤 13:30 那一格沒有成交額增量、bmv 是 null，KPI 要往回找最後一個有值的，
+       否則收盤後整晚看到的都是「主力錢 —」。 */
+    var 末錢 = null;
+    for(var k = rows.length - 1; k >= 0; k--){ if(rows[k].b !== null){ 末錢 = rows[k].b; break; } }
     box.className = 'dk ' + (末.s >= 0 ? 'up' : 'down');
     document.getElementById('dkq').textContent = 簽(末.s);
 
@@ -1274,7 +1307,7 @@ DUOKONG_JS = """
       格('多空空間', 簽(末.s), 末.s >= 0 ? 'up' : 'down') +
       格('上漲 / 下跌', 末.up + ' / ' + 末.dn, 'dim') +
       格('快動能', 簽(末.y), 末.y >= 0 ? 'up' : 'down') +
-      格('慢動能', 簽(末.b), 末.b >= 0 ? 'up' : 'down') +
+      格('主力錢', 錢簽(末錢), (末錢 || 0) >= 0 ? 'up' : 'down') +
       格('這 5 分成交', (末.amt || 0).toLocaleString('en-US') + ' 億', 'dim');
 
     畫();
@@ -1289,7 +1322,7 @@ DUOKONG_JS = """
     if(!row) return;
     document.getElementById('dkfact').innerHTML =
       '<b>' + row.t + '</b>　多空空間 <b>' + 簽(row.s) + '</b>（漲 ' + row.up + ' / 跌 ' + row.dn +
-      '）　快動能 <b>' + 簽(row.y) + '</b>　慢動能 <b>' + 簽(row.b) + '</b>　這 5 分 ' +
+      '）　快動能 <b>' + 簽(row.y) + '</b>　主力錢 <b>' + 錢簽(row.b) + '</b>　這 5 分 ' +
       (row.amt || 0).toLocaleString('en-US') + ' 億';
   });
 
@@ -1546,10 +1579,12 @@ thead th{{position:sticky;top:0;background:var(--panel);color:var(--muted);font-
   量通常只有本週的零頭，牆的位置常是先卡好的初始陣地，看的是下一段的區間預期，
   不要拿來當今天的當沖依據；量能不足時撐壓會自動擋掉不顯示。<br>
   <b>盤中多空空間</b>（最上面那張卡）：全市場約 2,700 檔的即時報價壓成三條線 ——
-  紅綠棒是<b>上漲家數 − 下跌家數</b>（狀態量），黃藍兩線是同一個數字減掉自己前 30 分鐘／
-  前 100 分鐘的移動平均。<b>兩條線刻意做成去趨勢</b>：直接畫水位跟紅綠棒的相關性 r=+0.88，
-  等於把同一件事畫兩次；減掉自己的均線之後，線講的才是「相對於剛才是在加速還是退潮」。
-  藍線離散成 ±100／±200 四階，因為大型股本來就黏，階梯化之後「中期力道站哪邊」才一眼可讀。
+  紅綠棒是<b>上漲家數 − 下跌家數</b>（狀態量），黃線是同一個數字減掉自己前 30 分鐘的
+  移動平均＝<b>去趨勢</b>後的短期動能（直接畫水位跟紅綠棒相關性 r=+0.88，等於把同一件事
+  畫兩次）。<b>藍線走右軸，是另一個來源的東西</b>：成交額前 100 大的買賣方向淨值（−1~+1），
+  也就是「大錢站哪一邊」。兩個軸的 0 對齊，所以<b>家數在零軸下、藍線在零軸上</b>
+  就是「個股在跌、大錢在買」——2026-09-07 就是這樣，指數 +1.67% 而家數 −419。
+  同向的日子藍線不帶新資訊；實測它對家數變化<b>沒有領先性</b>，不要當提前訊號用。
   資料來自另一支常駐 Cloudflare 的 Worker（cron 每 5 分鐘掃一輪存進 KV），
   瀏覽器直接向它拿，所以<b>這張卡的新舊跟本頁的產生時間無關</b>，它自己每 60 秒重抓一次；
   Worker 掛掉時整張卡不顯示，不影響下面的選擇權報價。點卡片右上角可以進到完整版看型態判讀。
