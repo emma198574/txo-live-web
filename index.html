@@ -1,0 +1,919 @@
+<meta charset="utf-8">
+<title>台指選擇權即時 T 字報價</title>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<!-- 加到 iPhone 主畫面後全螢幕開啟（沒有這行會一直帶著 Safari 的網址列與工具列）。
+     status bar 設成透明是因為本頁 light/dark 自動切換：設死 black 或 default
+     一定會有一種模式下狀態列跟頁面撞色，透明才能讓 --bg 直接透上來。
+     代價是內容會延伸到瀏海底下，靠下面 .wrap 的 safe-area-inset 補回來。 -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="台指T字">
+<meta name="theme-color" content="#17181a">
+<!-- /icon.png 由 Vercel 的 api/icon.py 服務。排程版（Cloudflare）沒有這個路徑會 404，
+     iOS 就退回用網頁截圖當圖示——備援頁不需要漂亮圖示，故意不為它多改 workflow。 -->
+<link rel="apple-touch-icon" href="/icon.png">
+<link rel="icon" href="/icon.png">
+<style>
+:root{--bg:#f7f6f3;--panel:#fff;--ink:#1c1b19;--muted:#6b6862;--line:#e7e4dd;
+  --call:#c0392b;--put:#1e7a3c;--atm:#fff6d8;--hair:#efece5;}
+@media(prefers-color-scheme:dark){:root{--bg:#17181a;--panel:#1f2124;--ink:#ececec;
+  --muted:#9a9790;--line:#2e3033;--call:#ff6b5c;--put:#54c777;--atm:#3a3418;--hair:#26282b;}}
+:root[data-theme=dark]{--bg:#17181a;--panel:#1f2124;--ink:#ececec;--muted:#9a9790;
+  --line:#2e3033;--call:#ff6b5c;--put:#54c777;--atm:#3a3418;--hair:#26282b;}
+:root[data-theme=light]{--bg:#f7f6f3;--panel:#fff;--ink:#1c1b19;--muted:#6b6862;
+  --line:#e7e4dd;--call:#c0392b;--put:#1e7a3c;--atm:#fff6d8;--hair:#efece5;}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font-family:-apple-system,"PingFang TC","Helvetica Neue",Arial,sans-serif;
+  font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased;}
+.wrap{max-width:1080px;margin:0 auto;
+  padding:calc(24px + env(safe-area-inset-top)) calc(14px + env(safe-area-inset-right))
+          calc(60px + env(safe-area-inset-bottom)) calc(14px + env(safe-area-inset-left));}
+h1{font-size:20px;margin:0 0 4px;font-weight:700;letter-spacing:.3px}
+.sub{color:var(--muted);font-size:12.5px;margin-bottom:6px;line-height:1.6}
+/* 資料新鮮度：雲端排程常被 GitHub 跳過，這裡讓「這份資料多舊」一眼可見 */
+#age{font-weight:600}
+#age.stale{color:#d8b24a}
+#age.dead{color:#ff6a5c}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#9a9790;margin-right:6px;
+  vertical-align:middle;animation:pulse 1.6s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+@media(prefers-reduced-motion:reduce){.dot{animation:none}}
+.kpis{display:grid;grid-template-columns:repeat(5,1fr);gap:9px;margin:14px 0}
+@media(max-width:640px){.kpis{grid-template-columns:repeat(2,1fr)}}
+.kpi{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+.kpi .l{font-size:10.5px;color:var(--muted);letter-spacing:.4px;margin-bottom:4px}
+.kpi .v{font-size:18px;font-weight:700} .kpi .v small{font-size:11px;font-weight:500;color:var(--muted)}
+.kpi.call .v{color:var(--call)} .kpi.put .v{color:var(--put)}
+/* 莊家意圖卡：四象限結論。過期時整張轉灰並蓋警語，見 AGE_JS */
+.mind{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--muted);
+  border-radius:10px;padding:12px 14px;margin:0 0 10px}
+.mind.bull{border-left-color:var(--call)} .mind.bear{border-left-color:var(--put)}
+.mind.range,.mind.vol{border-left-color:#d8b24a}
+.mh{font-size:12px;font-weight:700;color:var(--muted);letter-spacing:.4px}
+.mq{color:var(--ink);font-size:16px;margin-left:9px;letter-spacing:0}
+.mind.bull .mq{color:var(--call)} .mind.bear .mq{color:var(--put)}
+.mind.range .mq,.mind.vol .mq{color:#c99a1e}
+.mlegs{display:grid;grid-template-columns:1fr 1fr;gap:6px 14px;margin:9px 0 8px}
+@media(max-width:640px){.mlegs{grid-template-columns:1fr}}
+.leg{display:flex;align-items:baseline;gap:7px;font-size:12px;flex-wrap:wrap}
+.lgl{color:var(--muted);font-size:10.5px;min-width:88px}
+.leg b{font-size:13px;font-weight:800;letter-spacing:.5px}
+.leg b.sell{color:var(--put)} .leg b.buy{color:var(--call)} .leg b.mid{color:var(--muted)}
+.lgd{font-size:11.5px} .lgn{color:var(--muted);font-size:10.5px}
+.mhow{font-size:12.5px;line-height:1.7;padding-top:8px;border-top:1px solid var(--hair)}
+.mrange{font-size:12.5px;margin-top:7px} .mrange b{font-size:15px}
+.mrange small{font-size:9.5px;color:var(--muted);font-weight:500;margin-left:3px}
+.mshift{font-size:11px;color:var(--muted);margin-top:5px}
+.mnote{color:var(--muted);font-size:10.5px;margin-top:8px;padding-top:7px;
+  border-top:1px solid var(--hair);line-height:1.6}
+.mexp{display:none;font-size:11.5px;font-weight:700;color:#ff6a5c;
+  margin-top:8px;padding-top:7px;border-top:1px solid var(--hair)}
+.mind.expired{border-left-color:var(--muted)!important}
+.mind.expired .mlegs,.mind.expired .mhow,.mind.expired .mrange,
+.mind.expired .mshift,.mind.expired .mnote,.mind.expired .mq{
+  filter:grayscale(1);opacity:.32}
+.mind.expired .mexp{display:block}
+.zones{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin:0 0 14px}
+@media(max-width:640px){.zones{grid-template-columns:1fr}}
+.zone{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:11px 13px}
+.zone.res{border-left:3px solid var(--call)} .zone.sup{border-left:3px solid var(--put)}
+.zh{font-size:12px;font-weight:700;margin-bottom:7px}
+.zh small{font-weight:500;color:var(--muted);font-size:10.5px;margin-left:7px}
+.zrow{display:flex;align-items:baseline;gap:8px;font-size:12px;padding:3px 0;flex-wrap:wrap}
+.zrow b{font-size:14px;min-width:58px}
+.zm{color:var(--ink);min-width:56px} .zv,.zr,.zt{color:var(--muted);font-size:11px}
+.zr.sell,.zt.sell{color:var(--put)} .zr.buy,.zt.buy{color:var(--call)}
+.zt{margin-left:auto;font-weight:600}
+.zrow.thin .zm{color:var(--muted);font-size:11.5px}
+.zn{color:var(--muted);font-size:10.5px;margin-top:7px;padding-top:7px;border-top:1px solid var(--hair)}
+.tblwrap{overflow-x:auto;background:var(--panel);border:1px solid var(--line);border-radius:12px}
+table{border-collapse:collapse;width:100%;font-size:12.5px;min-width:960px}
+thead th{position:sticky;top:0;background:var(--panel);color:var(--muted);font-weight:600;
+  font-size:10.5px;letter-spacing:.3px;padding:8px 7px;border-bottom:2px solid var(--line)}
+.grp-c{color:var(--call)} .grp-p{color:var(--put)}
+.drow td{padding:4px 7px;border-bottom:1px solid var(--hair);text-align:right;white-space:nowrap}
+.strike{text-align:center!important;font-weight:700;background:var(--bg);
+  border-left:1px solid var(--line);border-right:1px solid var(--line)}
+.be,.oi{color:var(--muted)} .px{font-weight:600}
+.chg{font-size:11px;color:var(--muted)}
+.chg.sell{color:var(--put);font-weight:700;background:rgba(30,160,70,.13)}
+.chg.buy{color:var(--call);font-weight:700;background:rgba(214,52,52,.13)}
+.amt .amtnum{display:block} .px .pxnum{display:block}
+.delta{display:none;font-size:9.5px;font-weight:700;line-height:1.4;margin-top:1px;
+  padding:0 4px;border-radius:3px;background:rgba(0,0,0,.34);letter-spacing:.2px}
+.delta.plain{background:transparent;padding:0}
+.delta.plain.up{color:var(--call)} .delta.plain.down{color:var(--put)}
+.delta.up{color:#ff6a5c} .delta.down{color:#37d67a}
+.e{background:transparent!important}
+.drow.atm .strike{background:var(--atm)}
+.drow.atm td{border-top:1px solid #d8b24a;border-bottom:1px solid #d8b24a}
+.note{color:var(--muted);font-size:11.5px;line-height:1.75;margin-top:16px}
+.note b{color:var(--ink)}
+.legend{display:flex;gap:16px;flex-wrap:wrap;font-size:11.5px;color:var(--muted);margin:10px 2px 0}
+.sw{display:inline-block;width:24px;height:10px;border-radius:2px;vertical-align:middle;margin-right:5px}
+.tabs{display:flex;gap:8px;flex-wrap:wrap;margin:16px 0 10px}
+.tab{appearance:none;font:inherit;font-size:13px;font-weight:700;cursor:pointer;
+  background:var(--panel);color:var(--muted);border:1px solid var(--line);
+  border-radius:999px;padding:8px 16px;line-height:1.3}
+.tab small{display:block;font-size:10.5px;font-weight:500;opacity:.8;margin-top:2px}
+.tab.on{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+.sub-tab{margin:0 2px 4px}
+.panel{display:none} .panel.on{display:block}
+/* 盤中多空空間卡：全市場家數的三條線。放在分頁之外，因為它跟到期別無關，
+   三個分頁看到的都該是同一份。內容全由 DUOKONG_JS 在瀏覽器端填（見 4.9 節註解）。 */
+.dk{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--muted);
+  border-radius:10px;padding:12px 14px;margin:12px 0 4px}
+.dk.up{border-left-color:var(--call)} .dk.down{border-left-color:var(--put)}
+.dkh{font-size:12px;font-weight:700;color:var(--muted);letter-spacing:.4px;
+  display:flex;align-items:baseline;flex-wrap:wrap;gap:0 8px}
+.dkh small{font-size:10px;font-weight:500;opacity:.75;margin-left:-4px}
+.dkq{color:var(--ink);font-size:17px;letter-spacing:0}
+.dk.up .dkq{color:var(--call)} .dk.down .dkq{color:var(--put)}
+.dkd{font-size:10.5px;font-weight:500;color:var(--muted)}
+.dka{margin-left:auto;font-size:11px;font-weight:600;color:var(--muted);text-decoration:none;
+  border:1px solid var(--line);border-radius:999px;padding:2px 9px;white-space:nowrap}
+.dka:hover{color:var(--ink);border-color:var(--muted)}
+/* 圖高度寫死 152px：手機直放時再高就把下面的表格擠出畫面外，
+   而這張卡的角色是「一眼看今天的骨架」，不是拿來細看的主圖。 */
+.dkwrap{position:relative;height:152px;margin:8px 0 2px}
+#dkcv{width:100%;height:152px;display:block;touch-action:manipulation}
+.dkfact{font-size:11.5px;color:var(--muted);line-height:1.7;min-height:20px}
+.dkfact b{color:var(--ink);font-weight:600}
+/* 數字列刻意不用頁面上那組 .kpi 方塊：這張卡是最上面的附掛讀數，
+   五個方塊在手機上要吃掉三列高度，會把主角（T 字表）擠出第一屏。 */
+.dkkpis{display:flex;flex-wrap:wrap;gap:5px 18px;margin:9px 0 0;
+  padding-top:8px;border-top:1px solid var(--hair)}
+.dks{display:flex;align-items:baseline;gap:6px}
+.dks .l{font-size:10.5px;color:var(--muted)}
+.dks b{font-size:15px;font-weight:700}
+.dks b.up{color:var(--call)} .dks b.down{color:var(--put)}
+.dks b.dim{color:var(--ink);font-weight:600;font-size:14px}
+.dknote{color:var(--muted);font-size:10.5px;margin-top:9px;padding-top:7px;
+  border-top:1px solid var(--hair);line-height:1.65}
+</style>
+<div class="wrap" data-gen="2026-09-19 07:36:07" data-epoch="1789774567">
+<h1>台指選擇權即時 T 字報價</h1>
+<div class="sub"><span class="dot"></span>非交易（顯示最後成交價）　·　標的 47,405（TXF近月(非交易)）　·　產生 2026-09-19 07:36:07　·　<span id="age">—</span></div>
+<div class="dk" id="dk" hidden>
+  <div class="dkh">盤中多空空間<small>全市場家數</small>
+    <span class="dkq" id="dkq">—</span>
+    <span class="dkd" id="dkd"></span>
+    <a class="dka" href="https://duokong.emma198574.workers.dev" target="_blank" rel="noopener">完整判讀 ↗</a>
+  </div>
+  <div class="dkwrap"><canvas id="dkcv"></canvas></div>
+  <div class="dkfact" id="dkfact"></div>
+  <div class="dkkpis" id="dkkpi"></div>
+  <div class="dknote">紅綠棒＝<b>多空空間</b>（上漲家數 − 下跌家數），
+    黃線＝<b>快動能</b>（減前 30 分鐘均值），藍線＝<b>主力錢</b>（成交額前 100 大的買賣方向，
+    右軸 −1~+1）。<b>家數在零軸下、藍線在零軸上</b>＝個股在跌但大錢在買。
+    每 5 分鐘一根，與本頁的選擇權報價各自獨立更新。<b>未經回測，不是進出場訊號。</b></div>
+</div>
+<div class="tabs">
+  <button class="tab" data-tab="wed">週三結算<small>09/23 W4</small></button>
+  <button class="tab" data-tab="fri">週五結算<small>10/02 F1</small></button>
+  <button class="tab" data-tab="wed2">下週三結算<small>09/30 W5</small></button>
+  <button class="tab" data-tab="mth">隔月結算<small>10/21 10月選</small></button>
+</div>
+<section class="panel" data-panel="wed">
+<div class="sub sub-tab">09/23 到期（W4）　·　⚠ 非今日行情　最後成交 09/18 04:59:57　·　本到期別成交 82,281 口</div>
+<div class="kpis">
+  <div class="kpi call"><div class="l">CALL 成交量</div><div class="v">38,620<small> 口</small></div></div>
+  <div class="kpi put"><div class="l">PUT 成交量</div><div class="v">34,151<small> 口</small></div></div>
+  <div class="kpi"><div class="l">Put/Call 量比</div><div class="v">0.88</div></div>
+  <div class="kpi"><div class="l">P/C 未平倉比</div><div class="v">0.83</div></div>
+  <div class="kpi"><div class="l">價平</div><div class="v">47,400</div></div>
+</div>
+<div class="mind flat">
+  <div class="mh">莊家意圖<span class="mq">觀望</span></div>
+  <div class="mlegs">
+    <div class="leg"><span class="lgl">標的之上・買權</span><b class="mid">中性</b><span class="lgn">-1.0pt，未達 ±2.1 門檻</span></div>
+    <div class="leg"><span class="lgl">標的之下・賣權</span><b class="mid">中性</b><span class="lgn">-1.9pt，未達 ±2.9 門檻</span></div>
+  </div>
+  <div class="mhow">買權側中性、賣權側中性，四象限不成立。莊家今天沒有表態，這種盤最容易兩面被巴 —— 先不做。</div>
+  <div class="mrange">台指參考區間　<b>46,500<small>盤中</small></b> ～ <b>47,500<small>盤中</small></b></div><div class="mshift">買權陣地下移 500 點（偏空）　·　支撐上移 500 點（偏多）</div>
+  <div class="mnote">失效條件：等任一側出現明確的綠（築牆）或粉（追價）再看。</div>
+  <div class="mexp">⚠ 資料已超過 15 分鐘，方向判讀不可用 —— 到 Actions 手動 Run 一次再看</div>
+</div>
+<div class="zones">
+  <div class="zone res">
+    <div class="zh">盤中壓力區<small>標的之上・買權今日成交口數</small></div>
+    <div class="zrow"><b>47,500</b><span class="zm">3,600 口</span><span class="zv">3,528 萬</span><span class="zr ">-2%</span><span class="zt ">中性</span></div>
+<div class="zrow"><b>48,000</b><span class="zm">3,409 口</span><span class="zv">1,210 萬</span><span class="zr ">-8%</span><span class="zt ">中性</span></div>
+<div class="zrow"><b>47,600</b><span class="zm">1,965 口</span><span class="zv">1,434 萬</span><span class="zr ">-12%</span><span class="zt ">中性</span></div>
+    <div class="zn">昨日 買權 OI 牆 48,000　·　盤中重心下移 500 點</div>
+  </div>
+  <div class="zone sup">
+    <div class="zh">盤中支撐區<small>標的之下・賣權今日成交口數</small></div>
+    <div class="zrow"><b>46,500</b><span class="zm">3,030 口</span><span class="zv">1,515 萬</span><span class="zr ">-24%</span><span class="zt ">中性</span></div>
+<div class="zrow"><b>46,000</b><span class="zm">2,952 口</span><span class="zv">443 萬</span><span class="zr sell">-50%</span><span class="zt sell">賣方築牆</span></div>
+<div class="zrow"><b>47,000</b><span class="zm">2,696 口</span><span class="zv">3,127 萬</span><span class="zr ">-21%</span><span class="zt ">中性</span></div>
+    <div class="zn">昨日 賣權 OI 牆 46,000　·　盤中重心上移 500 點</div>
+  </div>
+</div>
+<div class="tblwrap">
+<table>
+<thead><tr>
+  <th class="grp-c">CALL 金額</th><th class="grp-c">口數</th><th class="grp-c">OI</th><th class="grp-c">今日</th><th class="grp-c">權利金</th><th class="grp-c">損益兩平</th>
+  <th>履約價</th>
+  <th class="grp-p">損益兩平</th><th class="grp-p">權利金</th><th class="grp-p">今日</th><th class="grp-p">OI</th><th class="grp-p">口數</th><th class="grp-p">PUT 金額</th>
+</tr></thead>
+<tbody>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="45950" data-amt="130000" style="background:rgb(253,245,245)"><span class="amtnum">130,000</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 0.1%,transparent 0.1% 100%)">2</td><td class="oi">23</td><td class="chg " title="今日 +5%，對照價內同儕超額 +6pt → 中性">+5%</td><td class="px" data-tab="wed" data-side="C" data-k="45950" data-px="1300"><span class="pxnum">1300</span><span class="delta plain"></span></td><td class="be">47,250</td><td class="strike">45,950</td><td class="be">45,913</td><td class="px" data-tab="wed" data-side="P" data-k="45950" data-px="37"><span class="pxnum">37</span><span class="delta plain"></span></td><td class="chg " title="今日 -31%，對照價外同儕超額 -2pt → 中性">-31%</td><td class="oi">63</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 13.6%,transparent 13.6% 100%)">411</td><td class="amt" data-tab="wed" data-side="P" data-k="45950" data-amt="760350" style="background:rgb(225,242,231)"><span class="amtnum">760,350</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="46000" data-amt="1100000" style="background:rgb(248,224,224)"><span class="amtnum">1,100,000</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 0.6%,transparent 0.6% 100%)">20</td><td class="oi">80</td><td class="chg " title="今日 -8%，對照價內同儕超額 -6pt → 中性">-8%</td><td class="px" data-tab="wed" data-side="C" data-k="46000" data-px="1100"><span class="pxnum">1100</span><span class="delta plain"></span></td><td class="be">47,100</td><td class="strike">46,000</td><td class="be">45,970</td><td class="px" data-tab="wed" data-side="P" data-k="46000" data-px="30"><span class="pxnum">30</span><span class="delta plain"></span></td><td class="chg sell" title="今日 -50%，對照價外同儕超額 -20pt → 賣方築牆">-50%</td><td class="oi">864</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 97.4%,transparent 97.4% 100%)">2,952</td><td class="amt" data-tab="wed" data-side="P" data-k="46000" data-amt="4428000" style="background:rgb(178,222,191)"><span class="amtnum">4,428,000</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">46,050</td><td class="be">46,014</td><td class="px" data-tab="wed" data-side="P" data-k="46050" data-px="36"><span class="pxnum">36</span><span class="delta plain"></span></td><td class="chg " title="今日 -42%，對照價外同儕超額 -12pt → 中性">-42%</td><td class="oi">72</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 12.8%,transparent 12.8% 100%)">389</td><td class="amt" data-tab="wed" data-side="P" data-k="46050" data-amt="700200" style="background:rgb(227,243,232)"><span class="amtnum">700,200</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="46100" data-amt="58500" style="background:rgb(253,248,248)"><span class="amtnum">58,500</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 0.0%,transparent 0.0% 100%)">1</td><td class="oi">503</td><td class="chg " title="今日 +5%，對照價內同儕超額 +7pt → 中性">+5%</td><td class="px" data-tab="wed" data-side="C" data-k="46100" data-px="1170"><span class="pxnum">1170</span><span class="delta plain"></span></td><td class="be">47,270</td><td class="strike">46,100</td><td class="be">46,060</td><td class="px" data-tab="wed" data-side="P" data-k="46100" data-px="40.5"><span class="pxnum">40.5</span><span class="delta plain"></span></td><td class="chg " title="今日 -40%，對照價外同儕超額 -11pt → 中性">-40%</td><td class="oi">264</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 38.9%,transparent 38.9% 100%)">1,178</td><td class="amt" data-tab="wed" data-side="P" data-k="46100" data-amt="2385450" style="background:rgb(200,231,210)"><span class="amtnum">2,385,450</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="46150" data-amt="306000" style="background:rgb(251,240,240)"><span class="amtnum">306,000</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 0.2%,transparent 0.2% 100%)">6</td><td class="oi">16</td><td class="chg " title="今日 -4%，對照價內同儕超額 -2pt → 中性">-4%</td><td class="px" data-tab="wed" data-side="C" data-k="46150" data-px="1020"><span class="pxnum">1020</span><span class="delta plain"></span></td><td class="be">47,170</td><td class="strike">46,150</td><td class="be">46,109</td><td class="px" data-tab="wed" data-side="P" data-k="46150" data-px="41"><span class="pxnum">41</span><span class="delta plain"></span></td><td class="chg sell" title="今日 -48%，對照價外同儕超額 -18pt → 賣方築牆">-48%</td><td class="oi">151</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 38.4%,transparent 38.4% 100%)">1,164</td><td class="amt" data-tab="wed" data-side="P" data-k="46150" data-amt="2386200" style="background:rgb(200,231,210)"><span class="amtnum">2,386,200</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="46200" data-amt="612000" style="background:rgb(250,233,233)"><span class="amtnum">612,000</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 0.3%,transparent 0.3% 100%)">12</td><td class="oi">24</td><td class="chg " title="今日 +0%，對照價內同儕超額 +2pt → 中性">+0%</td><td class="px" data-tab="wed" data-side="C" data-k="46200" data-px="1020"><span class="pxnum">1020</span><span class="delta plain"></span></td><td class="be">47,220</td><td class="strike">46,200</td><td class="be">46,155</td><td class="px" data-tab="wed" data-side="P" data-k="46200" data-px="45"><span class="pxnum">45</span><span class="delta plain"></span></td><td class="chg sell" title="今日 -46%，對照價外同儕超額 -17pt → 賣方築牆">-46%</td><td class="oi">202</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 45.1%,transparent 45.1% 100%)">1,368</td><td class="amt" data-tab="wed" data-side="P" data-k="46200" data-amt="3078000" style="background:rgb(192,228,203)"><span class="amtnum">3,078,000</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="46250" data-amt="91000" style="background:rgb(253,247,247)"><span class="amtnum">91,000</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 0.1%,transparent 0.1% 100%)">2</td><td class="oi">14</td><td class="chg " title="今日 -7%，對照價內同儕超額 -5pt → 中性">-7%</td><td class="px" data-tab="wed" data-side="C" data-k="46250" data-px="910"><span class="pxnum">910</span><span class="delta plain"></span></td><td class="be">47,160</td><td class="strike">46,250</td><td class="be">46,195</td><td class="px" data-tab="wed" data-side="P" data-k="46250" data-px="55"><span class="pxnum">55</span><span class="delta plain"></span></td><td class="chg " title="今日 -37%，對照價外同儕超額 -7pt → 中性">-37%</td><td class="oi">97</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 16.6%,transparent 16.6% 100%)">503</td><td class="amt" data-tab="wed" data-side="P" data-k="46250" data-amt="1383250" style="background:rgb(214,237,221)"><span class="amtnum">1,383,250</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="46300" data-amt="731000" style="background:rgb(250,230,230)"><span class="amtnum">731,000</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 0.5%,transparent 0.5% 100%)">17</td><td class="oi">28</td><td class="chg " title="今日 -8%，對照價內同儕超額 -6pt → 中性">-8%</td><td class="px" data-tab="wed" data-side="C" data-k="46300" data-px="860"><span class="pxnum">860</span><span class="delta plain"></span></td><td class="be">47,160</td><td class="strike">46,300</td><td class="be">46,234</td><td class="px" data-tab="wed" data-side="P" data-k="46300" data-px="66"><span class="pxnum">66</span><span class="delta plain"></span></td><td class="chg " title="今日 -34%，對照價外同儕超額 -4pt → 中性">-34%</td><td class="oi">228</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 43.8%,transparent 43.8% 100%)">1,328</td><td class="amt" data-tab="wed" data-side="P" data-k="46300" data-amt="4382400" style="background:rgb(178,222,192)"><span class="amtnum">4,382,400</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="46350" data-amt="119250" style="background:rgb(253,246,246)"><span class="amtnum">119,250</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 0.1%,transparent 0.1% 100%)">3</td><td class="oi">13</td><td class="chg " title="今日 -13%，對照價內同儕超額 -11pt → 中性">-13%</td><td class="px" data-tab="wed" data-side="C" data-k="46350" data-px="795"><span class="pxnum">795</span><span class="delta plain"></span></td><td class="be">47,145</td><td class="strike">46,350</td><td class="be">46,273</td><td class="px" data-tab="wed" data-side="P" data-k="46350" data-px="77"><span class="pxnum">77</span><span class="delta plain"></span></td><td class="chg " title="今日 -27%，對照價外同儕超額 +3pt → 中性">-27%</td><td class="oi">172</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 25.3%,transparent 25.3% 100%)">768</td><td class="amt" data-tab="wed" data-side="P" data-k="46350" data-amt="2956800" style="background:rgb(193,229,204)"><span class="amtnum">2,956,800</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="46400" data-amt="5146750" style="background:rgb(240,184,184)"><span class="amtnum">5,146,750</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 3.3%,transparent 3.3% 100%)">119</td><td class="oi">671</td><td class="chg " title="今日 +1%，對照價內同儕超額 +2pt → 中性">+1%</td><td class="px" data-tab="wed" data-side="C" data-k="46400" data-px="865"><span class="pxnum">865</span><span class="delta plain"></span></td><td class="be">47,265</td><td class="strike">46,400</td><td class="be">46,315</td><td class="px" data-tab="wed" data-side="P" data-k="46400" data-px="85"><span class="pxnum">85</span><span class="delta plain"></span></td><td class="chg " title="今日 -26%，對照價外同儕超額 +4pt → 中性">-26%</td><td class="oi">484</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 50.8%,transparent 50.8% 100%)">1,540</td><td class="amt" data-tab="wed" data-side="P" data-k="46400" data-amt="6545000" style="background:rgb(159,214,176)"><span class="amtnum">6,545,000</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">46,450</td><td class="be">46,363</td><td class="px" data-tab="wed" data-side="P" data-k="46450" data-px="87"><span class="pxnum">87</span><span class="delta plain"></span></td><td class="chg " title="今日 -30%，對照價外同儕超額 -1pt → 中性">-30%</td><td class="oi">76</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 29.2%,transparent 29.2% 100%)">884</td><td class="amt" data-tab="wed" data-side="P" data-k="46450" data-amt="3845400" style="background:rgb(183,225,196)"><span class="amtnum">3,845,400</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="46500" data-amt="2557500" style="background:rgb(245,207,207)"><span class="amtnum">2,557,500</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 1.8%,transparent 1.8% 100%)">66</td><td class="oi">191</td><td class="chg " title="今日 +1%，對照價內同儕超額 +2pt → 中性">+1%</td><td class="px" data-tab="wed" data-side="C" data-k="46500" data-px="775"><span class="pxnum">775</span><span class="delta plain"></span></td><td class="be">47,275</td><td class="strike">46,500</td><td class="be">46,400</td><td class="px" data-tab="wed" data-side="P" data-k="46500" data-px="100"><span class="pxnum">100</span><span class="delta plain"></span></td><td class="chg " title="今日 -24%，對照價外同儕超額 +5pt → 中性">-24%</td><td class="oi">434</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 100.0%,transparent 100.0% 100%)">3,030</td><td class="amt" data-tab="wed" data-side="P" data-k="46500" data-amt="15150000" style="background:rgb(103,191,130)"><span class="amtnum">15,150,000</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="46550" data-amt="67000" style="background:rgb(253,248,248)"><span class="amtnum">67,000</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 0.1%,transparent 0.1% 100%)">2</td><td class="oi">13</td><td class="chg " title="今日 -8%，對照價內同儕超額 -7pt → 中性">-8%</td><td class="px" data-tab="wed" data-side="C" data-k="46550" data-px="670"><span class="pxnum">670</span><span class="delta plain"></span></td><td class="be">47,220</td><td class="strike">46,550</td><td class="be">46,440</td><td class="px" data-tab="wed" data-side="P" data-k="46550" data-px="110"><span class="pxnum">110</span><span class="delta plain"></span></td><td class="chg " title="今日 -25%，對照價外同儕超額 +4pt → 中性">-25%</td><td class="oi">29</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 26.5%,transparent 26.5% 100%)">803</td><td class="amt" data-tab="wed" data-side="P" data-k="46550" data-amt="4416500" style="background:rgb(178,222,191)"><span class="amtnum">4,416,500</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="46600" data-amt="3312000" style="background:rgb(243,199,199)"><span class="amtnum">3,312,000</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 2.6%,transparent 2.6% 100%)">92</td><td class="oi">100</td><td class="chg " title="今日 +4%，對照價內同儕超額 +6pt → 中性">+4%</td><td class="px" data-tab="wed" data-side="C" data-k="46600" data-px="720"><span class="pxnum">720</span><span class="delta plain"></span></td><td class="be">47,320</td><td class="strike">46,600</td><td class="be">46,484</td><td class="px" data-tab="wed" data-side="P" data-k="46600" data-px="116"><span class="pxnum">116</span><span class="delta plain"></span></td><td class="chg " title="今日 -27%，對照價外同儕超額 +3pt → 中性">-27%</td><td class="oi">172</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 54.1%,transparent 54.1% 100%)">1,640</td><td class="amt" data-tab="wed" data-side="P" data-k="46600" data-amt="9512000" style="background:rgb(138,205,158)"><span class="amtnum">9,512,000</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="46650" data-amt="980000" style="background:rgb(249,226,226)"><span class="amtnum">980,000</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 1.0%,transparent 1.0% 100%)">35</td><td class="oi">21</td><td class="chg " title="今日 -14%，對照價內同儕超額 -12pt → 中性">-14%</td><td class="px" data-tab="wed" data-side="C" data-k="46650" data-px="560"><span class="pxnum">560</span><span class="delta plain"></span></td><td class="be">47,210</td><td class="strike">46,650</td><td class="be">46,534</td><td class="px" data-tab="wed" data-side="P" data-k="46650" data-px="116"><span class="pxnum">116</span><span class="delta plain"></span></td><td class="chg " title="今日 -33%，對照價外同儕超額 -3pt → 中性">-33%</td><td class="oi">50</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 29.5%,transparent 29.5% 100%)">895</td><td class="amt" data-tab="wed" data-side="P" data-k="46650" data-amt="5191000" style="background:rgb(171,219,186)"><span class="amtnum">5,191,000</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="46700" data-amt="3215500" style="background:rgb(244,200,200)"><span class="amtnum">3,215,500</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 3.0%,transparent 3.0% 100%)">109</td><td class="oi">67</td><td class="chg " title="今日 -5%，對照價內同儕超額 -3pt → 中性">-5%</td><td class="px" data-tab="wed" data-side="C" data-k="46700" data-px="590"><span class="pxnum">590</span><span class="delta plain"></span></td><td class="be">47,290</td><td class="strike">46,700</td><td class="be">46,579</td><td class="px" data-tab="wed" data-side="P" data-k="46700" data-px="121"><span class="pxnum">121</span><span class="delta plain"></span></td><td class="chg " title="今日 -36%，對照價外同儕超額 -6pt → 中性">-36%</td><td class="oi">143</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 54.4%,transparent 54.4% 100%)">1,648</td><td class="amt" data-tab="wed" data-side="P" data-k="46700" data-amt="9970400" style="background:rgb(135,204,156)"><span class="amtnum">9,970,400</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="46750" data-amt="2065500" style="background:rgb(246,212,212)"><span class="amtnum">2,065,500</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 2.2%,transparent 2.2% 100%)">81</td><td class="oi">86</td><td class="chg " title="今日 -13%，對照價內同儕超額 -11pt → 中性">-13%</td><td class="px" data-tab="wed" data-side="C" data-k="46750" data-px="510"><span class="pxnum">510</span><span class="delta plain"></span></td><td class="be">47,260</td><td class="strike">46,750</td><td class="be">46,627</td><td class="px" data-tab="wed" data-side="P" data-k="46750" data-px="123"><span class="pxnum">123</span><span class="delta plain"></span></td><td class="chg " title="今日 -39%，對照價外同儕超額 -9pt → 中性">-39%</td><td class="oi">33</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 27.5%,transparent 27.5% 100%)">834</td><td class="amt" data-tab="wed" data-side="P" data-k="46750" data-amt="5129100" style="background:rgb(171,219,186)"><span class="amtnum">5,129,100</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="46800" data-amt="10254750" style="background:rgb(234,152,152)"><span class="amtnum">10,254,750</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 10.1%,transparent 10.1% 100%)">363</td><td class="oi">174</td><td class="chg " title="今日 +2%，對照價內同儕超額 +3pt → 中性">+2%</td><td class="px" data-tab="wed" data-side="C" data-k="46800" data-px="565"><span class="pxnum">565</span><span class="delta plain"></span></td><td class="be">47,365</td><td class="strike">46,800</td><td class="be">46,655</td><td class="px" data-tab="wed" data-side="P" data-k="46800" data-px="145"><span class="pxnum">145</span><span class="delta plain"></span></td><td class="chg " title="今日 -34%，對照價外同儕超額 -5pt → 中性">-34%</td><td class="oi">196</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 57.1%,transparent 57.1% 100%)">1,731</td><td class="amt" data-tab="wed" data-side="P" data-k="46800" data-amt="12549750" style="background:rgb(118,197,143)"><span class="amtnum">12,549,750</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="46850" data-amt="3536250" style="background:rgb(243,197,197)"><span class="amtnum">3,536,250</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 3.4%,transparent 3.4% 100%)">123</td><td class="oi">142</td><td class="chg " title="今日 +11%，對照價內同儕超額 +12pt → 中性">+11%</td><td class="px" data-tab="wed" data-side="C" data-k="46850" data-px="575"><span class="pxnum">575</span><span class="delta plain"></span></td><td class="be">47,425</td><td class="strike">46,850</td><td class="be">46,663</td><td class="px" data-tab="wed" data-side="P" data-k="46850" data-px="187"><span class="pxnum">187</span><span class="delta plain"></span></td><td class="chg " title="今日 -19%，對照價外同儕超額 +11pt → 中性">-19%</td><td class="oi">48</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 23.7%,transparent 23.7% 100%)">719</td><td class="amt" data-tab="wed" data-side="P" data-k="46850" data-amt="6722650" style="background:rgb(158,214,175)"><span class="amtnum">6,722,650</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="46900" data-amt="8856000" style="background:rgb(235,160,160)"><span class="amtnum">8,856,000</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 9.1%,transparent 9.1% 100%)">328</td><td class="oi">889</td><td class="chg " title="今日 +12%，對照價內同儕超額 +13pt → 中性">+12%</td><td class="px" data-tab="wed" data-side="C" data-k="46900" data-px="540"><span class="pxnum">540</span><span class="delta plain"></span></td><td class="be">47,440</td><td class="strike">46,900</td><td class="be">46,695</td><td class="px" data-tab="wed" data-side="P" data-k="46900" data-px="205"><span class="pxnum">205</span><span class="delta plain"></span></td><td class="chg " title="今日 -20%，對照價外同儕超額 +10pt → 中性">-20%</td><td class="oi">122</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 34.7%,transparent 34.7% 100%)">1,050</td><td class="amt" data-tab="wed" data-side="P" data-k="46900" data-amt="10762500" style="background:rgb(129,202,152)"><span class="amtnum">10,762,500</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="46950" data-amt="3602300" style="background:rgb(243,197,197)"><span class="amtnum">3,602,300</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 4.5%,transparent 4.5% 100%)">163</td><td class="oi">65</td><td class="chg " title="今日 -4%，對照價內同儕超額 -2pt → 中性">-4%</td><td class="px" data-tab="wed" data-side="C" data-k="46950" data-px="442"><span class="pxnum">442</span><span class="delta plain"></span></td><td class="be">47,392</td><td class="strike">46,950</td><td class="be">46,756</td><td class="px" data-tab="wed" data-side="P" data-k="46950" data-px="194"><span class="pxnum">194</span><span class="delta plain"></span></td><td class="chg " title="今日 -29%，對照價外同儕超額 +1pt → 中性">-29%</td><td class="oi">137</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 21.8%,transparent 21.8% 100%)">662</td><td class="amt" data-tab="wed" data-side="P" data-k="46950" data-amt="6421400" style="background:rgb(160,215,177)"><span class="amtnum">6,421,400</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="47000" data-amt="26939500" style="background:rgb(219,79,79)"><span class="amtnum">26,939,500</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 34.8%,transparent 34.8% 100%)">1,253</td><td class="oi">500</td><td class="chg " title="今日 +1%，對照價內同儕超額 +2pt → 中性">+1%</td><td class="px" data-tab="wed" data-side="C" data-k="47000" data-px="430"><span class="pxnum">430</span><span class="delta plain"></span></td><td class="be">47,430</td><td class="strike">47,000</td><td class="be">46,768</td><td class="px" data-tab="wed" data-side="P" data-k="47000" data-px="232"><span class="pxnum">232</span><span class="delta plain"></span></td><td class="chg " title="今日 -21%，對照價外同儕超額 +9pt → 中性">-21%</td><td class="oi">259</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 89.0%,transparent 89.0% 100%)">2,696</td><td class="amt" data-tab="wed" data-side="P" data-k="47000" data-amt="31273600" style="background:rgb(30,160,70)"><span class="amtnum">31,273,600</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="47050" data-amt="4972400" style="background:rgb(241,185,185)"><span class="amtnum">4,972,400</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 6.9%,transparent 6.9% 100%)">248</td><td class="oi">48</td><td class="chg " title="今日 -1%，對照價內同儕超額 +0pt → 中性">-1%</td><td class="px" data-tab="wed" data-side="C" data-k="47050" data-px="401"><span class="pxnum">401</span><span class="delta plain"></span></td><td class="be">47,451</td><td class="strike">47,050</td><td class="be">46,852</td><td class="px" data-tab="wed" data-side="P" data-k="47050" data-px="198"><span class="pxnum">198</span><span class="delta plain"></span></td><td class="chg " title="今日 -38%，對照價外同儕超額 -8pt → 中性">-38%</td><td class="oi">26</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 17.9%,transparent 17.9% 100%)">542</td><td class="amt" data-tab="wed" data-side="P" data-k="47050" data-amt="5365800" style="background:rgb(169,218,184)"><span class="amtnum">5,365,800</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="47100" data-amt="15688750" style="background:rgb(228,125,125)"><span class="amtnum">15,688,750</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 22.6%,transparent 22.6% 100%)">815</td><td class="oi">154</td><td class="chg " title="今日 +3%，對照價內同儕超額 +4pt → 中性">+3%</td><td class="px" data-tab="wed" data-side="C" data-k="47100" data-px="385"><span class="pxnum">385</span><span class="delta plain"></span></td><td class="be">47,485</td><td class="strike">47,100</td><td class="be">46,859</td><td class="px" data-tab="wed" data-side="P" data-k="47100" data-px="241"><span class="pxnum">241</span><span class="delta plain"></span></td><td class="chg " title="今日 -29%，對照價外同儕超額 +1pt → 中性">-29%</td><td class="oi">131</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 31.1%,transparent 31.1% 100%)">941</td><td class="amt" data-tab="wed" data-side="P" data-k="47100" data-amt="11339050" style="background:rgb(126,200,149)"><span class="amtnum">11,339,050</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="47150" data-amt="8806700" style="background:rgb(235,160,160)"><span class="amtnum">8,806,700</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 15.2%,transparent 15.2% 100%)">547</td><td class="oi">59</td><td class="chg sell" title="今日 -7%，對照價內同儕超額 -6pt → 賣方築牆">-7%</td><td class="px" data-tab="wed" data-side="C" data-k="47150" data-px="322"><span class="pxnum">322</span><span class="delta plain"></span></td><td class="be">47,472</td><td class="strike">47,150</td><td class="be">46,889</td><td class="px" data-tab="wed" data-side="P" data-k="47150" data-px="261"><span class="pxnum">261</span><span class="delta plain"></span></td><td class="chg " title="今日 -28%，對照價外同儕超額 +2pt → 中性">-28%</td><td class="oi">39</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 21.0%,transparent 21.0% 100%)">636</td><td class="amt" data-tab="wed" data-side="P" data-k="47150" data-amt="8299800" style="background:rgb(146,209,165)"><span class="amtnum">8,299,800</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="47200" data-amt="32144000" style="background:rgb(216,62,62)"><span class="amtnum">32,144,000</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 55.8%,transparent 55.8% 100%)">2,009</td><td class="oi">393</td><td class="chg " title="今日 +0%，對照價內同儕超額 +2pt → 中性">+0%</td><td class="px" data-tab="wed" data-side="C" data-k="47200" data-px="320"><span class="pxnum">320</span><span class="delta plain"></span></td><td class="be">47,520</td><td class="strike">47,200</td><td class="be">46,875</td><td class="px" data-tab="wed" data-side="P" data-k="47200" data-px="325"><span class="pxnum">325</span><span class="delta plain"></span></td><td class="chg buy" title="今日 -16%，對照價外同儕超額 +13pt → 買方追價">-16%</td><td class="oi">86</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 43.7%,transparent 43.7% 100%)">1,324</td><td class="amt" data-tab="wed" data-side="P" data-k="47200" data-amt="21515000" style="background:rgb(71,177,104)"><span class="amtnum">21,515,000</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="47250" data-amt="8657800" style="background:rgb(236,161,161)"><span class="amtnum">8,657,800</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 16.5%,transparent 16.5% 100%)">593</td><td class="oi">160</td><td class="chg " title="今日 -1%，對照價內同儕超額 +0pt → 中性">-1%</td><td class="px" data-tab="wed" data-side="C" data-k="47250" data-px="292"><span class="pxnum">292</span><span class="delta plain"></span></td><td class="be">47,542</td><td class="strike">47,250</td><td class="be">46,913</td><td class="px" data-tab="wed" data-side="P" data-k="47250" data-px="337"><span class="pxnum">337</span><span class="delta plain"></span></td><td class="chg " title="今日 -18%，對照價外同儕超額 +12pt → 中性">-18%</td><td class="oi">11</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 10.3%,transparent 10.3% 100%)">312</td><td class="amt" data-tab="wed" data-side="P" data-k="47250" data-amt="5257200" style="background:rgb(170,219,185)"><span class="amtnum">5,257,200</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="47300" data-amt="20484500" style="background:rgb(224,104,104)"><span class="amtnum">20,484,500</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 42.9%,transparent 42.9% 100%)">1,546</td><td class="oi">319</td><td class="chg " title="今日 -4%，對照價內同儕超額 -2pt → 中性">-4%</td><td class="px" data-tab="wed" data-side="C" data-k="47300" data-px="265"><span class="pxnum">265</span><span class="delta plain"></span></td><td class="be">47,565</td><td class="strike">47,300</td><td class="be">46,950</td><td class="px" data-tab="wed" data-side="P" data-k="47300" data-px="350"><span class="pxnum">350</span><span class="delta plain"></span></td><td class="chg " title="今日 -21%，對照價外同儕超額 +8pt → 中性">-21%</td><td class="oi">175</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 18.3%,transparent 18.3% 100%)">553</td><td class="amt" data-tab="wed" data-side="P" data-k="47300" data-amt="9677500" style="background:rgb(136,205,157)"><span class="amtnum">9,677,500</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="47350" data-amt="9867650" style="background:rgb(234,154,154)"><span class="amtnum">9,867,650</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 22.2%,transparent 22.2% 100%)">799</td><td class="oi">47</td><td class="chg " title="今日 -3%，對照價內同儕超額 -2pt → 中性">-3%</td><td class="px" data-tab="wed" data-side="C" data-k="47350" data-px="247"><span class="pxnum">247</span><span class="delta plain"></span></td><td class="be">47,597</td><td class="strike">47,350</td><td class="be">46,945</td><td class="px" data-tab="wed" data-side="P" data-k="47350" data-px="405"><span class="pxnum">405</span><span class="delta plain"></span></td><td class="chg " title="今日 -14%，對照價外同儕超額 +16pt → 中性">-14%</td><td class="oi">12</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 7.9%,transparent 7.9% 100%)">238</td><td class="amt" data-tab="wed" data-side="P" data-k="47350" data-amt="4819500" style="background:rgb(174,221,188)"><span class="amtnum">4,819,500</span><span class="delta"></span></td></tr>
+<tr class="drow atm"><td class="amt" data-tab="wed" data-side="C" data-k="47400" data-amt="19738950" style="background:rgb(225,107,107)"><span class="amtnum">19,738,950</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 47.5%,transparent 47.5% 100%)">1,709</td><td class="oi">425</td><td class="chg " title="今日 -2%，對照價內同儕超額 -0pt → 中性">-2%</td><td class="px" data-tab="wed" data-side="C" data-k="47400" data-px="231"><span class="pxnum">231</span><span class="delta plain"></span></td><td class="be">47,631</td><td class="strike">47,400</td><td class="be">46,995</td><td class="px" data-tab="wed" data-side="P" data-k="47400" data-px="405"><span class="pxnum">405</span><span class="delta plain"></span></td><td class="chg " title="今日 -17%，對照價外同儕超額 +12pt → 中性">-17%</td><td class="oi">12</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 12.0%,transparent 12.0% 100%)">364</td><td class="amt" data-tab="wed" data-side="P" data-k="47400" data-amt="7371000" style="background:rgb(153,212,171)"><span class="amtnum">7,371,000</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="47450" data-amt="7956000" style="background:rgb(236,165,165)"><span class="amtnum">7,956,000</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 21.7%,transparent 21.7% 100%)">780</td><td class="oi">28</td><td class="chg " title="今日 -5%，對照價外同儕超額 +1pt → 中性">-5%</td><td class="px" data-tab="wed" data-side="C" data-k="47450" data-px="204"><span class="pxnum">204</span><span class="delta plain"></span></td><td class="be">47,654</td><td class="strike">47,450</td><td class="be">47,010</td><td class="px" data-tab="wed" data-side="P" data-k="47450" data-px="440"><span class="pxnum">440</span><span class="delta plain"></span></td><td class="chg " title="今日 -19%（樣本不足或無成交，不判定）">-19%</td><td class="oi">4</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 3.8%,transparent 3.8% 100%)">115</td><td class="amt" data-tab="wed" data-side="P" data-k="47450" data-amt="2530000" style="background:rgb(198,231,208)"><span class="amtnum">2,530,000</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="47500" data-amt="35280000" style="background:rgb(214,52,52)"><span class="amtnum">35,280,000</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 100.0%,transparent 100.0% 100%)">3,600</td><td class="oi">1,002</td><td class="chg " title="今日 -2%，對照價外同儕超額 +4pt → 中性">-2%</td><td class="px" data-tab="wed" data-side="C" data-k="47500" data-px="196"><span class="pxnum">196</span><span class="delta plain"></span></td><td class="be">47,696</td><td class="strike">47,500</td><td class="be">47,005</td><td class="px" data-tab="wed" data-side="P" data-k="47500" data-px="495"><span class="pxnum">495</span><span class="delta plain"></span></td><td class="chg " title="今日 -12%（樣本不足或無成交，不判定）">-12%</td><td class="oi">28</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 16.2%,transparent 16.2% 100%)">492</td><td class="amt" data-tab="wed" data-side="P" data-k="47500" data-amt="12177000" style="background:rgb(121,198,144)"><span class="amtnum">12,177,000</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="47550" data-amt="7089000" style="background:rgb(238,171,171)"><span class="amtnum">7,089,000</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 23.2%,transparent 23.2% 100%)">834</td><td class="oi">71</td><td class="chg " title="今日 -4%，對照價外同儕超額 +2pt → 中性">-4%</td><td class="px" data-tab="wed" data-side="C" data-k="47550" data-px="170"><span class="pxnum">170</span><span class="delta plain"></span></td><td class="be">47,720</td><td class="strike">47,550</td><td class="be">46,930</td><td class="px" data-tab="wed" data-side="P" data-k="47550" data-px="620"><span class="pxnum">620</span><span class="delta plain"></span></td><td class="chg " title="今日 +3%（樣本不足或無成交，不判定）">+3%</td><td class="oi">6</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 1.0%,transparent 1.0% 100%)">31</td><td class="amt" data-tab="wed" data-side="P" data-k="47550" data-amt="961000" style="background:rgb(221,241,227)"><span class="amtnum">961,000</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="47600" data-amt="14344500" style="background:rgb(230,131,131)"><span class="amtnum">14,344,500</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 54.6%,transparent 54.6% 100%)">1,965</td><td class="oi">253</td><td class="chg " title="今日 -12%，對照價外同儕超額 -6pt → 中性">-12%</td><td class="px" data-tab="wed" data-side="C" data-k="47600" data-px="146"><span class="pxnum">146</span><span class="delta plain"></span></td><td class="be">47,746</td><td class="strike">47,600</td><td class="be">47,020</td><td class="px" data-tab="wed" data-side="P" data-k="47600" data-px="580"><span class="pxnum">580</span><span class="delta plain"></span></td><td class="chg " title="今日 -10%（樣本不足或無成交，不判定）">-10%</td><td class="oi">2</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 3.3%,transparent 3.3% 100%)">99</td><td class="amt" data-tab="wed" data-side="P" data-k="47600" data-amt="2871000" style="background:rgb(194,229,205)"><span class="amtnum">2,871,000</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="47650" data-amt="5508000" style="background:rgb(240,181,181)"><span class="amtnum">5,508,000</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 22.7%,transparent 22.7% 100%)">816</td><td class="oi">24</td><td class="chg " title="今日 -10%，對照價外同儕超額 -4pt → 中性">-10%</td><td class="px" data-tab="wed" data-side="C" data-k="47650" data-px="135"><span class="pxnum">135</span><span class="delta plain"></span></td><td class="be">47,785</td><td class="strike">47,650</td><td class="be">46,960</td><td class="px" data-tab="wed" data-side="P" data-k="47650" data-px="690"><span class="pxnum">690</span><span class="delta plain"></span></td><td class="chg " title="今日 +3%（樣本不足或無成交，不判定）">+3%</td><td class="oi"></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 0.2%,transparent 0.2% 100%)">5</td><td class="amt" data-tab="wed" data-side="P" data-k="47650" data-amt="172500" style="background:rgb(242,249,244)"><span class="amtnum">172,500</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="47700" data-amt="10552200" style="background:rgb(233,150,150)"><span class="amtnum">10,552,200</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 45.4%,transparent 45.4% 100%)">1,636</td><td class="oi">262</td><td class="chg " title="今日 -4%，對照價外同儕超額 +2pt → 中性">-4%</td><td class="px" data-tab="wed" data-side="C" data-k="47700" data-px="129"><span class="pxnum">129</span><span class="delta plain"></span></td><td class="be">47,829</td><td class="strike">47,700</td><td class="be">47,120</td><td class="px" data-tab="wed" data-side="P" data-k="47700" data-px="580"><span class="pxnum">580</span><span class="delta plain"></span></td><td class="chg " title="今日 -17%（樣本不足或無成交，不判定）">-17%</td><td class="oi">2</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 2.2%,transparent 2.2% 100%)">66</td><td class="amt" data-tab="wed" data-side="P" data-k="47700" data-amt="1914000" style="background:rgb(206,234,215)"><span class="amtnum">1,914,000</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="47750" data-amt="3108900" style="background:rgb(244,201,201)"><span class="amtnum">3,108,900</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 13.4%,transparent 13.4% 100%)">482</td><td class="oi">41</td><td class="chg buy" title="今日 +3%，對照價外同儕超額 +9pt → 買方追價">+3%</td><td class="px" data-tab="wed" data-side="C" data-k="47750" data-px="129"><span class="pxnum">129</span><span class="delta plain"></span></td><td class="be">47,879</td><td class="strike">47,750</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="47800" data-amt="8154900" style="background:rgb(236,164,164)"><span class="amtnum">8,154,900</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 44.4%,transparent 44.4% 100%)">1,599</td><td class="oi">279</td><td class="chg " title="今日 -11%，對照價外同儕超額 -5pt → 中性">-11%</td><td class="px" data-tab="wed" data-side="C" data-k="47800" data-px="102"><span class="pxnum">102</span><span class="delta plain"></span></td><td class="be">47,902</td><td class="strike">47,800</td><td class="be">47,020</td><td class="px" data-tab="wed" data-side="P" data-k="47800" data-px="780"><span class="pxnum">780</span><span class="delta plain"></span></td><td class="chg " title="今日 -1%（樣本不足或無成交，不判定）">-1%</td><td class="oi">2</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 0.6%,transparent 0.6% 100%)">17</td><td class="amt" data-tab="wed" data-side="P" data-k="47800" data-amt="663000" style="background:rgb(227,243,232)"><span class="amtnum">663,000</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="47850" data-amt="3386400" style="background:rgb(243,199,199)"><span class="amtnum">3,386,400</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 18.4%,transparent 18.4% 100%)">664</td><td class="oi">162</td><td class="chg " title="今日 -2%，對照價外同儕超額 +4pt → 中性">-2%</td><td class="px" data-tab="wed" data-side="C" data-k="47850" data-px="102"><span class="pxnum">102</span><span class="delta plain"></span></td><td class="be">47,952</td><td class="strike">47,850</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="47900" data-amt="5879700" style="background:rgb(239,179,179)"><span class="amtnum">5,879,700</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 34.8%,transparent 34.8% 100%)">1,251</td><td class="oi">180</td><td class="chg " title="今日 -2%，對照價外同儕超額 +4pt → 中性">-2%</td><td class="px" data-tab="wed" data-side="C" data-k="47900" data-px="94"><span class="pxnum">94</span><span class="delta plain"></span></td><td class="be">47,994</td><td class="strike">47,900</td><td class="be">46,970</td><td class="px" data-tab="wed" data-side="P" data-k="47900" data-px="930"><span class="pxnum">930</span><span class="delta plain"></span></td><td class="chg " title="今日 +8%（樣本不足或無成交，不判定）">+8%</td><td class="oi">9</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 0.3%,transparent 0.3% 100%)">8</td><td class="amt" data-tab="wed" data-side="P" data-k="47900" data-amt="372000" style="background:rgb(235,246,238)"><span class="amtnum">372,000</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="47950" data-amt="2605250" style="background:rgb(245,206,206)"><span class="amtnum">2,605,250</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 17.0%,transparent 17.0% 100%)">613</td><td class="oi">46</td><td class="chg buy" title="今日 +4%，對照價外同儕超額 +10pt → 買方追價">+4%</td><td class="px" data-tab="wed" data-side="C" data-k="47950" data-px="85"><span class="pxnum">85</span><span class="delta plain"></span></td><td class="be">48,035</td><td class="strike">47,950</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="48000" data-amt="12101950" style="background:rgb(232,142,142)"><span class="amtnum">12,101,950</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 94.7%,transparent 94.7% 100%)">3,409</td><td class="oi">1,096</td><td class="chg " title="今日 -8%，對照價外同儕超額 -2pt → 中性">-8%</td><td class="px" data-tab="wed" data-side="C" data-k="48000" data-px="71"><span class="pxnum">71</span><span class="delta plain"></span></td><td class="be">48,071</td><td class="strike">48,000</td><td class="be">47,070</td><td class="px" data-tab="wed" data-side="P" data-k="48000" data-px="930"><span class="pxnum">930</span><span class="delta plain"></span></td><td class="chg " title="今日 -2%（樣本不足或無成交，不判定）">-2%</td><td class="oi">27</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 4.7%,transparent 4.7% 100%)">142</td><td class="amt" data-tab="wed" data-side="P" data-k="48000" data-amt="6603000" style="background:rgb(159,214,176)"><span class="amtnum">6,603,000</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="48050" data-amt="1837500" style="background:rgb(246,215,215)"><span class="amtnum">1,837,500</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 13.6%,transparent 13.6% 100%)">490</td><td class="oi">75</td><td class="chg buy" title="今日 +7%，對照價外同儕超額 +13pt → 買方追價">+7%</td><td class="px" data-tab="wed" data-side="C" data-k="48050" data-px="75"><span class="pxnum">75</span><span class="delta plain"></span></td><td class="be">48,125</td><td class="strike">48,050</td><td class="be">47,130</td><td class="px" data-tab="wed" data-side="P" data-k="48050" data-px="920"><span class="pxnum">920</span><span class="delta plain"></span></td><td class="chg " title="今日 -7%（樣本不足或無成交，不判定）">-7%</td><td class="oi"></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 0.2%,transparent 0.2% 100%)">6</td><td class="amt" data-tab="wed" data-side="P" data-k="48050" data-amt="276000" style="background:rgb(238,247,241)"><span class="amtnum">276,000</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="48100" data-amt="3208800" style="background:rgb(244,200,200)"><span class="amtnum">3,208,800</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 31.8%,transparent 31.8% 100%)">1,146</td><td class="oi">186</td><td class="chg " title="今日 -10%，對照價外同儕超額 -4pt → 中性">-10%</td><td class="px" data-tab="wed" data-side="C" data-k="48100" data-px="56"><span class="pxnum">56</span><span class="delta plain"></span></td><td class="be">48,156</td><td class="strike">48,100</td><td class="be">47,140</td><td class="px" data-tab="wed" data-side="P" data-k="48100" data-px="960"><span class="pxnum">960</span><span class="delta plain"></span></td><td class="chg " title="今日 -8%（樣本不足或無成交，不判定）">-8%</td><td class="oi">5</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 1.3%,transparent 1.3% 100%)">40</td><td class="amt" data-tab="wed" data-side="P" data-k="48100" data-amt="1920000" style="background:rgb(206,234,215)"><span class="amtnum">1,920,000</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="48150" data-amt="1713400" style="background:rgb(247,216,216)"><span class="amtnum">1,713,400</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 18.3%,transparent 18.3% 100%)">659</td><td class="oi">116</td><td class="chg " title="今日 -7%，對照價外同儕超額 -1pt → 中性">-7%</td><td class="px" data-tab="wed" data-side="C" data-k="48150" data-px="52"><span class="pxnum">52</span><span class="delta plain"></span></td><td class="be">48,202</td><td class="strike">48,150</td><td class="be">47,210</td><td class="px" data-tab="wed" data-side="P" data-k="48150" data-px="940"><span class="pxnum">940</span><span class="delta plain"></span></td><td class="chg " title="今日 -12%（樣本不足或無成交，不判定）">-12%</td><td class="oi">2</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 0.2%,transparent 0.2% 100%)">6</td><td class="amt" data-tab="wed" data-side="P" data-k="48150" data-amt="282000" style="background:rgb(238,247,241)"><span class="amtnum">282,000</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="48200" data-amt="2909250" style="background:rgb(244,203,203)"><span class="amtnum">2,909,250</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 35.9%,transparent 35.9% 100%)">1,293</td><td class="oi">316</td><td class="chg " title="今日 -7%，對照價外同儕超額 -1pt → 中性">-7%</td><td class="px" data-tab="wed" data-side="C" data-k="48200" data-px="45"><span class="pxnum">45</span><span class="delta plain"></span></td><td class="be">48,245</td><td class="strike">48,200</td><td class="be">47,020</td><td class="px" data-tab="wed" data-side="P" data-k="48200" data-px="1180"><span class="pxnum">1180</span><span class="delta plain"></span></td><td class="chg " title="今日 +5%（樣本不足或無成交，不判定）">+5%</td><td class="oi"></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 0.1%,transparent 0.1% 100%)">2</td><td class="amt" data-tab="wed" data-side="P" data-k="48200" data-amt="118000" style="background:rgb(244,250,246)"><span class="amtnum">118,000</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="48250" data-amt="849600" style="background:rgb(249,228,228)"><span class="amtnum">849,600</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 13.1%,transparent 13.1% 100%)">472</td><td class="oi">104</td><td class="chg sell" title="今日 -18%，對照價外同儕超額 -12pt → 賣方築牆">-18%</td><td class="px" data-tab="wed" data-side="C" data-k="48250" data-px="36"><span class="pxnum">36</span><span class="delta plain"></span></td><td class="be">48,286</td><td class="strike">48,250</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="48300" data-amt="1661550" style="background:rgb(247,217,217)"><span class="amtnum">1,661,550</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 28.0%,transparent 28.0% 100%)">1,007</td><td class="oi">141</td><td class="chg sell" title="今日 -15%，對照價外同儕超額 -10pt → 賣方築牆">-15%</td><td class="px" data-tab="wed" data-side="C" data-k="48300" data-px="33"><span class="pxnum">33</span><span class="delta plain"></span></td><td class="be">48,333</td><td class="strike">48,300</td><td class="be">47,100</td><td class="px" data-tab="wed" data-side="P" data-k="48300" data-px="1200"><span class="pxnum">1200</span><span class="delta plain"></span></td><td class="chg " title="今日 +0%（樣本不足或無成交，不判定）">+0%</td><td class="oi"></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 0.3%,transparent 0.3% 100%)">8</td><td class="amt" data-tab="wed" data-side="P" data-k="48300" data-amt="480000" style="background:rgb(232,245,236)"><span class="amtnum">480,000</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="48350" data-amt="612500" style="background:rgb(250,233,233)"><span class="amtnum">612,500</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 9.7%,transparent 9.7% 100%)">350</td><td class="oi">68</td><td class="chg " title="今日 +1%，對照價外同儕超額 +7pt → 中性">+1%</td><td class="px" data-tab="wed" data-side="C" data-k="48350" data-px="35"><span class="pxnum">35</span><span class="delta plain"></span></td><td class="be">48,385</td><td class="strike">48,350</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="48400" data-amt="1696800" style="background:rgb(247,216,216)"><span class="amtnum">1,696,800</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 39.3%,transparent 39.3% 100%)">1,414</td><td class="oi">156</td><td class="chg sell" title="今日 -21%，對照價外同儕超額 -15pt → 賣方築牆">-21%</td><td class="px" data-tab="wed" data-side="C" data-k="48400" data-px="24"><span class="pxnum">24</span><span class="delta plain"></span></td><td class="be">48,424</td><td class="strike">48,400</td><td class="be">47,070</td><td class="px" data-tab="wed" data-side="P" data-k="48400" data-px="1330"><span class="pxnum">1330</span><span class="delta plain"></span></td><td class="chg " title="今日 +3%（樣本不足或無成交，不判定）">+3%</td><td class="oi"></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 0.2%,transparent 0.2% 100%)">6</td><td class="amt" data-tab="wed" data-side="P" data-k="48400" data-amt="399000" style="background:rgb(234,246,238)"><span class="amtnum">399,000</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="48450" data-amt="220350" style="background:rgb(252,242,242)"><span class="amtnum">220,350</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 6.3%,transparent 6.3% 100%)">226</td><td class="oi">24</td><td class="chg " title="今日 -25%，對照價外同儕超額 -19pt → 中性">-25%</td><td class="px" data-tab="wed" data-side="C" data-k="48450" data-px="19.5"><span class="pxnum">19.5</span><span class="delta plain"></span></td><td class="be">48,470</td><td class="strike">48,450</td><td class="be">47,130</td><td class="px" data-tab="wed" data-side="P" data-k="48450" data-px="1320"><span class="pxnum">1320</span><span class="delta plain"></span></td><td class="chg " title="今日 -1%（樣本不足或無成交，不判定）">-1%</td><td class="oi"></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 0.0%,transparent 0.0% 100%)">1</td><td class="amt" data-tab="wed" data-side="P" data-k="48450" data-amt="66000" style="background:rgb(247,251,248)"><span class="amtnum">66,000</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="48500" data-amt="1477125" style="background:rgb(247,219,219)"><span class="amtnum">1,477,125</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 36.5%,transparent 36.5% 100%)">1,313</td><td class="oi">714</td><td class="chg " title="今日 -2%，對照價外同儕超額 +4pt → 中性">-2%</td><td class="px" data-tab="wed" data-side="C" data-k="48500" data-px="22.5"><span class="pxnum">22.5</span><span class="delta plain"></span></td><td class="be">48,522</td><td class="strike">48,500</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="48550" data-amt="182700" style="background:rgb(252,243,243)"><span class="amtnum">182,700</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 7.2%,transparent 7.2% 100%)">261</td><td class="oi">31</td><td class="chg " title="今日 -33%，對照價外同儕超額 -27pt → 中性">-33%</td><td class="px" data-tab="wed" data-side="C" data-k="48550" data-px="14"><span class="pxnum">14</span><span class="delta plain"></span></td><td class="be">48,564</td><td class="strike">48,550</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="48600" data-amt="412000" style="background:rgb(251,237,237)"><span class="amtnum">412,000</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 14.3%,transparent 14.3% 100%)">515</td><td class="oi">408</td><td class="chg " title="今日 -6%，對照價外同儕超額 +0pt → 中性">-6%</td><td class="px" data-tab="wed" data-side="C" data-k="48600" data-px="16"><span class="pxnum">16</span><span class="delta plain"></span></td><td class="be">48,616</td><td class="strike">48,600</td><td class="be">47,250</td><td class="px" data-tab="wed" data-side="P" data-k="48600" data-px="1350"><span class="pxnum">1350</span><span class="delta plain"></span></td><td class="chg " title="今日 -9%（樣本不足或無成交，不判定）">-9%</td><td class="oi"></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 0.1%,transparent 0.1% 100%)">4</td><td class="amt" data-tab="wed" data-side="P" data-k="48600" data-amt="270000" style="background:rgb(238,248,241)"><span class="amtnum">270,000</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="48700" data-amt="158239" style="background:rgb(252,244,244)"><span class="amtnum">158,239</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 9.6%,transparent 9.6% 100%)">344</td><td class="oi">447</td><td class="chg " title="今日 -32%，對照價外同儕超額 -26pt → 中性">-32%</td><td class="px" data-tab="wed" data-side="C" data-k="48700" data-px="9.2"><span class="pxnum">9.2</span><span class="delta plain"></span></td><td class="be">48,709</td><td class="strike">48,700</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="48800" data-amt="162750" style="background:rgb(252,244,244)"><span class="amtnum">162,750</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 8.6%,transparent 8.6% 100%)">310</td><td class="oi">102</td><td class="chg " title="今日 -9%，對照價外同儕超額 -3pt → 中性">-9%</td><td class="px" data-tab="wed" data-side="C" data-k="48800" data-px="10.5"><span class="pxnum">10.5</span><span class="delta plain"></span></td><td class="be">48,810</td><td class="strike">48,800</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="48900" data-amt="45900" style="background:rgb(253,249,249)"><span class="amtnum">45,900</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 3.0%,transparent 3.0% 100%)">108</td><td class="oi">82</td><td class="chg " title="今日 +0%，對照價外同儕超額 +6pt → 中性">+0%</td><td class="px" data-tab="wed" data-side="C" data-k="48900" data-px="8.5"><span class="pxnum">8.5</span><span class="delta plain"></span></td><td class="be">48,908</td><td class="strike">48,900</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+</tbody>
+</table>
+</div>
+<div class="note">
+  <b>本頁重點</b>：買權最大量 47,500（3,600 口）、賣權最大量 46,500（3,030 口）。未平倉牆（09/18 收盤・09/23 到期）：買權壓力 <b>48,000</b>、賣權支撐 <b>45,000</b>、Put/Call 未平倉比 <b>0.83</b>。
+</div>
+</section>
+<section class="panel" data-panel="fri">
+<div class="sub sub-tab">10/02 到期（F1）　·　⚠ 非今日行情　最後成交 09/18 04:52:23　·　本到期別成交 125 口</div>
+<div class="kpis">
+  <div class="kpi call"><div class="l">CALL 成交量</div><div class="v">46<small> 口</small></div></div>
+  <div class="kpi put"><div class="l">PUT 成交量</div><div class="v">8<small> 口</small></div></div>
+  <div class="kpi"><div class="l">Put/Call 量比</div><div class="v">0.17</div></div>
+  <div class="kpi"><div class="l">P/C 未平倉比</div><div class="v">1.50</div></div>
+  <div class="kpi"><div class="l">價平</div><div class="v">47,550</div></div>
+</div>
+<div class="mind flat">
+  <div class="mh">莊家意圖<span class="mq">觀望</span></div>
+  <div class="mlegs">
+    <div class="leg"><span class="lgl">標的之上・買權</span><span class="lgn">量能／樣本不足（0 口 / 0 檔），不判定</span></div>
+    <div class="leg"><span class="lgl">標的之下・賣權</span><span class="lgn">量能／樣本不足（0 口 / 0 檔），不判定</span></div>
+  </div>
+  <div class="mhow">買權側量能／樣本不足、賣權側量能／樣本不足，四象限不成立。莊家今天沒有表態，這種盤最容易兩面被巴 —— 先不做。</div>
+  <div class="mrange">台指參考區間　<b>46,350<small>昨日OI</small></b> ～ <b>48,900<small>昨日OI</small></b></div>
+  <div class="mnote">失效條件：等任一側出現明確的綠（築牆）或粉（追價）再看。</div>
+  <div class="mexp">⚠ 資料已超過 15 分鐘，方向判讀不可用 —— 到 Actions 手動 Run 一次再看</div>
+</div>
+<div class="zones">
+  <div class="zone res">
+    <div class="zh">盤中壓力區<small>標的之上・買權今日成交口數</small></div>
+    <div class="zrow thin"><span class="zm">量能不足（此側價外合計 36 口），不做撐壓判讀</span></div>
+    <div class="zn">昨日 買權 OI 牆 48,900</div>
+  </div>
+  <div class="zone sup">
+    <div class="zh">盤中支撐區<small>標的之下・賣權今日成交口數</small></div>
+    <div class="zrow thin"><span class="zm">量能不足（此側價外合計 8 口），不做撐壓判讀</span></div>
+    <div class="zn">昨日 賣權 OI 牆 46,350</div>
+  </div>
+</div>
+<div class="tblwrap">
+<table>
+<thead><tr>
+  <th class="grp-c">CALL 金額</th><th class="grp-c">口數</th><th class="grp-c">OI</th><th class="grp-c">今日</th><th class="grp-c">權利金</th><th class="grp-c">損益兩平</th>
+  <th>履約價</th>
+  <th class="grp-p">損益兩平</th><th class="grp-p">權利金</th><th class="grp-p">今日</th><th class="grp-p">OI</th><th class="grp-p">口數</th><th class="grp-p">PUT 金額</th>
+</tr></thead>
+<tbody>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">45,950</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">46,000</td><td class="be">45,816</td><td class="px" data-tab="fri" data-side="P" data-k="46000" data-px="184"><span class="pxnum">184</span><span class="delta plain"></span></td><td class="chg " title="今日 -17%（樣本不足或無成交，不判定）">-17%</td><td class="oi">3</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 50.0%,transparent 50.0% 100%)">1</td><td class="amt" data-tab="fri" data-side="P" data-k="46000" data-amt="9200" style="background:rgb(173,220,188)"><span class="amtnum">9,200</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">46,050</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">46,100</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">46,150</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">46,200</td><td class="be">45,918</td><td class="px" data-tab="fri" data-side="P" data-k="46200" data-px="282"><span class="pxnum">282</span><span class="delta plain"></span></td><td class="chg " title="今日 +5%（樣本不足或無成交，不判定）">+5%</td><td class="oi"></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 100.0%,transparent 100.0% 100%)">2</td><td class="amt" data-tab="fri" data-side="P" data-k="46200" data-amt="28200" style="background:rgb(104,191,131)"><span class="amtnum">28,200</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">46,250</td><td class="be">45,935</td><td class="px" data-tab="fri" data-side="P" data-k="46250" data-px="315"><span class="pxnum">315</span><span class="delta plain"></span></td><td class="chg " title="今日 +13%（樣本不足或無成交，不判定）">+13%</td><td class="oi">4</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 100.0%,transparent 100.0% 100%)">2</td><td class="amt" data-tab="fri" data-side="P" data-k="46250" data-amt="31500" style="background:rgb(94,187,123)"><span class="amtnum">31,500</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">46,300</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">46,350</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">46,400</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">46,450</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">46,500</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">46,550</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">46,600</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">46,650</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="amt" data-tab="fri" data-side="C" data-k="46700" data-amt="465000" style="background:rgb(214,52,52)"><span class="amtnum">465,000</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 34.5%,transparent 34.5% 100%)">10</td><td class="oi"></td><td class="chg " title="今日 -6%（樣本不足或無成交，不判定）">-6%</td><td class="px" data-tab="fri" data-side="C" data-k="46700" data-px="930"><span class="pxnum">930</span><span class="delta plain"></span></td><td class="be">47,630</td><td class="strike">46,700</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">46,750</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">46,800</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">46,850</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">46,900</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">46,950</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">47,000</td><td class="be">46,415</td><td class="px" data-tab="fri" data-side="P" data-k="47000" data-px="585"><span class="pxnum">585</span><span class="delta plain"></span></td><td class="chg " title="今日 +11%（樣本不足或無成交，不判定）">+11%</td><td class="oi"></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 100.0%,transparent 100.0% 100%)">2</td><td class="amt" data-tab="fri" data-side="P" data-k="47000" data-amt="58500" style="background:rgb(30,160,70)"><span class="amtnum">58,500</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">47,050</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">47,100</td><td class="be">46,470</td><td class="px" data-tab="fri" data-side="P" data-k="47100" data-px="630"><span class="pxnum">630</span><span class="delta plain"></span></td><td class="chg " title="今日 +11%（樣本不足或無成交，不判定）">+11%</td><td class="oi"></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 50.0%,transparent 50.0% 100%)">1</td><td class="amt" data-tab="fri" data-side="P" data-k="47100" data-amt="31500" style="background:rgb(94,187,123)"><span class="amtnum">31,500</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">47,150</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">47,200</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">47,250</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">47,300</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">47,350</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">47,400</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">47,450</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">47,500</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow atm"><td class="amt" data-tab="fri" data-side="C" data-k="47550" data-amt="27750" style="background:rgb(246,211,211)"><span class="amtnum">27,750</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 3.4%,transparent 3.4% 100%)">1</td><td class="oi"></td><td class="chg " title="今日 +8%（樣本不足或無成交，不判定）">+8%</td><td class="px" data-tab="fri" data-side="C" data-k="47550" data-px="555"><span class="pxnum">555</span><span class="delta plain"></span></td><td class="be">48,105</td><td class="strike">47,550</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">47,600</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">47,650</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">47,700</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">47,800</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">47,900</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">48,000</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">48,100</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">48,200</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">48,300</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">48,400</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="amt" data-tab="fri" data-side="C" data-k="48500" data-amt="18000" style="background:rgb(248,221,221)"><span class="amtnum">18,000</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 6.9%,transparent 6.9% 100%)">2</td><td class="oi">10</td><td class="chg " title="今日 -10%（樣本不足或無成交，不判定）">-10%</td><td class="px" data-tab="fri" data-side="C" data-k="48500" data-px="180"><span class="pxnum">180</span><span class="delta plain"></span></td><td class="be">48,680</td><td class="strike">48,500</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="amt" data-tab="fri" data-side="C" data-k="48600" data-amt="8000" style="background:rgb(250,233,233)"><span class="amtnum">8,000</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 3.4%,transparent 3.4% 100%)">1</td><td class="oi">3</td><td class="chg " title="今日 -19%（樣本不足或無成交，不判定）">-19%</td><td class="px" data-tab="fri" data-side="C" data-k="48600" data-px="160"><span class="pxnum">160</span><span class="delta plain"></span></td><td class="be">48,760</td><td class="strike">48,600</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="amt" data-tab="fri" data-side="C" data-k="48700" data-amt="261000" style="background:rgb(225,107,107)"><span class="amtnum">261,000</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 100.0%,transparent 100.0% 100%)">29</td><td class="oi">1</td><td class="chg " title="今日 +14%（樣本不足或無成交，不判定）">+14%</td><td class="px" data-tab="fri" data-side="C" data-k="48700" data-px="180"><span class="pxnum">180</span><span class="delta plain"></span></td><td class="be">48,880</td><td class="strike">48,700</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="amt" data-tab="fri" data-side="C" data-k="48800" data-amt="16800" style="background:rgb(248,222,222)"><span class="amtnum">16,800</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 10.3%,transparent 10.3% 100%)">3</td><td class="oi">9</td><td class="chg " title="今日 -20%（樣本不足或無成交，不判定）">-20%</td><td class="px" data-tab="fri" data-side="C" data-k="48800" data-px="112"><span class="pxnum">112</span><span class="delta plain"></span></td><td class="be">48,912</td><td class="strike">48,800</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">48,900</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+</tbody>
+</table>
+</div>
+<div class="note">
+  <b>本頁重點</b>：買權最大量 48,700（29 口）、賣權最大量 46,200（2 口）。未平倉牆（09/18 收盤・10/02 到期）：買權壓力 <b>49,000</b>、賣權支撐 <b>43,000</b>、Put/Call 未平倉比 <b>1.50</b>。
+</div>
+</section>
+<section class="panel" data-panel="wed2">
+<div class="sub sub-tab">09/30 到期（W5）　·　⚠ 非今日行情　最後成交 09/18 04:59:08　·　本到期別成交 1,131 口</div>
+<div class="kpis">
+  <div class="kpi call"><div class="l">CALL 成交量</div><div class="v">339<small> 口</small></div></div>
+  <div class="kpi put"><div class="l">PUT 成交量</div><div class="v">635<small> 口</small></div></div>
+  <div class="kpi"><div class="l">Put/Call 量比</div><div class="v">1.87</div></div>
+  <div class="kpi"><div class="l">P/C 未平倉比</div><div class="v">3.28</div></div>
+  <div class="kpi"><div class="l">價平</div><div class="v">47,500</div></div>
+</div>
+<div class="mind flat">
+  <div class="mh">莊家意圖<span class="mq">觀望</span></div>
+  <div class="mlegs">
+    <div class="leg"><span class="lgl">標的之上・買權</span><span class="lgn">量能／樣本不足（0 口 / 0 檔），不判定</span></div>
+    <div class="leg"><span class="lgl">標的之下・賣權</span><span class="lgn">量能／樣本不足（0 口 / 0 檔），不判定</span></div>
+  </div>
+  <div class="mhow">買權側量能／樣本不足、賣權側量能／樣本不足，四象限不成立。莊家今天沒有表態，這種盤最容易兩面被巴 —— 先不做。</div>
+  <div class="mrange">台指參考區間　<b>46,000<small>昨日OI</small></b> ～ <b>47,500<small>昨日OI</small></b></div>
+  <div class="mnote">失效條件：等任一側出現明確的綠（築牆）或粉（追價）再看。</div>
+  <div class="mexp">⚠ 資料已超過 15 分鐘，方向判讀不可用 —— 到 Actions 手動 Run 一次再看</div>
+</div>
+<div class="zones">
+  <div class="zone res">
+    <div class="zh">盤中壓力區<small>標的之上・買權今日成交口數</small></div>
+    <div class="zrow thin"><span class="zm">量能不足（此側價外合計 215 口），不做撐壓判讀</span></div>
+    <div class="zn">昨日 買權 OI 牆 47,500</div>
+  </div>
+  <div class="zone sup">
+    <div class="zh">盤中支撐區<small>標的之下・賣權今日成交口數</small></div>
+    <div class="zrow thin"><span class="zm">量能不足（此側價外合計 53 口），不做撐壓判讀</span></div>
+    <div class="zn">昨日 賣權 OI 牆 46,000</div>
+  </div>
+</div>
+<div class="tblwrap">
+<table>
+<thead><tr>
+  <th class="grp-c">CALL 金額</th><th class="grp-c">口數</th><th class="grp-c">OI</th><th class="grp-c">今日</th><th class="grp-c">權利金</th><th class="grp-c">損益兩平</th>
+  <th>履約價</th>
+  <th class="grp-p">損益兩平</th><th class="grp-p">權利金</th><th class="grp-p">今日</th><th class="grp-p">OI</th><th class="grp-p">口數</th><th class="grp-p">PUT 金額</th>
+</tr></thead>
+<tbody>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">45,950</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed2" data-side="C" data-k="46000" data-amt="68000" style="background:rgb(251,235,235)"><span class="amtnum">68,000</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 1.0%,transparent 1.0% 100%)">1</td><td class="oi">6</td><td class="chg " title="今日 -4%（樣本不足或無成交，不判定）">-4%</td><td class="px" data-tab="wed2" data-side="C" data-k="46000" data-px="1360"><span class="pxnum">1360</span><span class="delta plain"></span></td><td class="be">47,360</td><td class="strike">46,000</td><td class="be">45,800</td><td class="px" data-tab="wed2" data-side="P" data-k="46000" data-px="200"><span class="pxnum">200</span><span class="delta plain"></span></td><td class="chg " title="今日 +20%（樣本不足或無成交，不判定）">+20%</td><td class="oi">35</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 4.4%,transparent 4.4% 100%)">9</td><td class="amt" data-tab="wed2" data-side="P" data-k="46000" data-amt="90000" style="background:rgb(238,247,241)"><span class="amtnum">90,000</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">46,050</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">46,100</td><td class="be">45,874</td><td class="px" data-tab="wed2" data-side="P" data-k="46100" data-px="226"><span class="pxnum">226</span><span class="delta plain"></span></td><td class="chg " title="今日 +22%（樣本不足或無成交，不判定）">+22%</td><td class="oi">3</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 1.0%,transparent 1.0% 100%)">2</td><td class="amt" data-tab="wed2" data-side="P" data-k="46100" data-amt="22600" style="background:rgb(247,251,248)"><span class="amtnum">22,600</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">46,150</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">46,200</td><td class="be">45,968</td><td class="px" data-tab="wed2" data-side="P" data-k="46200" data-px="232"><span class="pxnum">232</span><span class="delta plain"></span></td><td class="chg " title="今日 +9%（樣本不足或無成交，不判定）">+9%</td><td class="oi">10</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 4.4%,transparent 4.4% 100%)">9</td><td class="amt" data-tab="wed2" data-side="P" data-k="46200" data-amt="104400" style="background:rgb(236,247,239)"><span class="amtnum">104,400</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">46,250</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">46,300</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">46,350</td><td class="be">46,088</td><td class="px" data-tab="wed2" data-side="P" data-k="46350" data-px="262"><span class="pxnum">262</span><span class="delta plain"></span></td><td class="chg " title="今日 +7%（樣本不足或無成交，不判定）">+7%</td><td class="oi">1</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 4.9%,transparent 4.9% 100%)">10</td><td class="amt" data-tab="wed2" data-side="P" data-k="46350" data-amt="131000" style="background:rgb(234,246,237)"><span class="amtnum">131,000</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">46,400</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">46,450</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed2" data-side="C" data-k="46500" data-amt="4810000" style="background:rgb(214,52,52)"><span class="amtnum">4,810,000</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 100.0%,transparent 100.0% 100%)">104</td><td class="oi">1</td><td class="chg " title="今日 -10%（樣本不足或無成交，不判定）">-10%</td><td class="px" data-tab="wed2" data-side="C" data-k="46500" data-px="925"><span class="pxnum">925</span><span class="delta plain"></span></td><td class="be">47,425</td><td class="strike">46,500</td><td class="be">46,167</td><td class="px" data-tab="wed2" data-side="P" data-k="46500" data-px="333"><span class="pxnum">333</span><span class="delta plain"></span></td><td class="chg " title="今日 +17%（樣本不足或無成交，不判定）">+17%</td><td class="oi">15</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 1.0%,transparent 1.0% 100%)">2</td><td class="amt" data-tab="wed2" data-side="P" data-k="46500" data-amt="33300" style="background:rgb(245,250,246)"><span class="amtnum">33,300</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">46,550</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">46,600</td><td class="be">46,259</td><td class="px" data-tab="wed2" data-side="P" data-k="46600" data-px="341"><span class="pxnum">341</span><span class="delta plain"></span></td><td class="chg " title="今日 +6%（樣本不足或無成交，不判定）">+6%</td><td class="oi">1</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 1.0%,transparent 1.0% 100%)">2</td><td class="amt" data-tab="wed2" data-side="P" data-k="46600" data-amt="34100" style="background:rgb(245,250,246)"><span class="amtnum">34,100</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">46,650</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">46,700</td><td class="be">46,380</td><td class="px" data-tab="wed2" data-side="P" data-k="46700" data-px="320"><span class="pxnum">320</span><span class="delta plain"></span></td><td class="chg " title="今日 -8%（樣本不足或無成交，不判定）">-8%</td><td class="oi">7</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 1.9%,transparent 1.9% 100%)">4</td><td class="amt" data-tab="wed2" data-side="P" data-k="46700" data-amt="64000" style="background:rgb(241,249,243)"><span class="amtnum">64,000</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">46,750</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">46,800</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">46,850</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">46,900</td><td class="be">46,403</td><td class="px" data-tab="wed2" data-side="P" data-k="46900" data-px="497"><span class="pxnum">497</span><span class="delta plain"></span></td><td class="chg " title="今日 +18%（樣本不足或無成交，不判定）">+18%</td><td class="oi">4</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 1.9%,transparent 1.9% 100%)">4</td><td class="amt" data-tab="wed2" data-side="P" data-k="46900" data-amt="99400" style="background:rgb(237,247,240)"><span class="amtnum">99,400</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">46,950</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed2" data-side="C" data-k="47000" data-amt="399750" style="background:rgb(244,203,203)"><span class="amtnum">399,750</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 12.5%,transparent 12.5% 100%)">13</td><td class="oi">5</td><td class="chg " title="今日 -10%（樣本不足或無成交，不判定）">-10%</td><td class="px" data-tab="wed2" data-side="C" data-k="47000" data-px="615"><span class="pxnum">615</span><span class="delta plain"></span></td><td class="be">47,615</td><td class="strike">47,000</td><td class="be">46,470</td><td class="px" data-tab="wed2" data-side="P" data-k="47000" data-px="530"><span class="pxnum">530</span><span class="delta plain"></span></td><td class="chg " title="今日 +15%（樣本不足或無成交，不判定）">+15%</td><td class="oi">6</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 1.9%,transparent 1.9% 100%)">4</td><td class="amt" data-tab="wed2" data-side="P" data-k="47000" data-amt="106000" style="background:rgb(236,247,239)"><span class="amtnum">106,000</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">47,050</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">47,100</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">47,150</td><td class="be">46,635</td><td class="px" data-tab="wed2" data-side="P" data-k="47150" data-px="515"><span class="pxnum">515</span><span class="delta plain"></span></td><td class="chg " title="今日 -2%（樣本不足或無成交，不判定）">-2%</td><td class="oi">1</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 0.5%,transparent 0.5% 100%)">1</td><td class="amt" data-tab="wed2" data-side="P" data-k="47150" data-amt="25750" style="background:rgb(246,251,248)"><span class="amtnum">25,750</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed2" data-side="C" data-k="47200" data-amt="113000" style="background:rgb(249,229,229)"><span class="amtnum">113,000</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 3.8%,transparent 3.8% 100%)">4</td><td class="oi">2</td><td class="chg " title="今日 -6%（樣本不足或無成交，不判定）">-6%</td><td class="px" data-tab="wed2" data-side="C" data-k="47200" data-px="565"><span class="pxnum">565</span><span class="delta plain"></span></td><td class="be">47,765</td><td class="strike">47,200</td><td class="be">46,580</td><td class="px" data-tab="wed2" data-side="P" data-k="47200" data-px="620"><span class="pxnum">620</span><span class="delta plain"></span></td><td class="chg " title="今日 +11%（樣本不足或無成交，不判定）">+11%</td><td class="oi">5</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 1.9%,transparent 1.9% 100%)">4</td><td class="amt" data-tab="wed2" data-side="P" data-k="47200" data-amt="124000" style="background:rgb(234,246,238)"><span class="amtnum">124,000</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed2" data-side="C" data-k="47250" data-amt="30750" style="background:rgb(252,242,242)"><span class="amtnum">30,750</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 1.0%,transparent 1.0% 100%)">1</td><td class="oi">2</td><td class="chg " title="今日 +10%（樣本不足或無成交，不判定）">+10%</td><td class="px" data-tab="wed2" data-side="C" data-k="47250" data-px="615"><span class="pxnum">615</span><span class="delta plain"></span></td><td class="be">47,865</td><td class="strike">47,250</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed2" data-side="C" data-k="47300" data-amt="25000" style="background:rgb(252,243,243)"><span class="amtnum">25,000</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 1.0%,transparent 1.0% 100%)">1</td><td class="oi">11</td><td class="chg " title="今日 -7%（樣本不足或無成交，不判定）">-7%</td><td class="px" data-tab="wed2" data-side="C" data-k="47300" data-px="500"><span class="pxnum">500</span><span class="delta plain"></span></td><td class="be">47,800</td><td class="strike">47,300</td><td class="be">46,625</td><td class="px" data-tab="wed2" data-side="P" data-k="47300" data-px="675"><span class="pxnum">675</span><span class="delta plain"></span></td><td class="chg " title="今日 +13%（樣本不足或無成交，不判定）">+13%</td><td class="oi">1</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 0.5%,transparent 0.5% 100%)">1</td><td class="amt" data-tab="wed2" data-side="P" data-k="47300" data-amt="33750" style="background:rgb(245,250,246)"><span class="amtnum">33,750</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">47,350</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">47,400</td><td class="be">46,670</td><td class="px" data-tab="wed2" data-side="P" data-k="47400" data-px="730"><span class="pxnum">730</span><span class="delta plain"></span></td><td class="chg " title="今日 +12%（樣本不足或無成交，不判定）">+12%</td><td class="oi">1</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 0.5%,transparent 0.5% 100%)">1</td><td class="amt" data-tab="wed2" data-side="P" data-k="47400" data-amt="36500" style="background:rgb(244,250,246)"><span class="amtnum">36,500</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">47,450</td><td class="be">46,820</td><td class="px" data-tab="wed2" data-side="P" data-k="47450" data-px="630"><span class="pxnum">630</span><span class="delta plain"></span></td><td class="chg " title="今日 -7%（樣本不足或無成交，不判定）">-7%</td><td class="oi">4</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 1.9%,transparent 1.9% 100%)">4</td><td class="amt" data-tab="wed2" data-side="P" data-k="47450" data-amt="126000" style="background:rgb(234,246,238)"><span class="amtnum">126,000</span><span class="delta"></span></td></tr>
+<tr class="drow atm"><td class="amt" data-tab="wed2" data-side="C" data-k="47500" data-amt="40200" style="background:rgb(252,240,240)"><span class="amtnum">40,200</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 1.9%,transparent 1.9% 100%)">2</td><td class="oi">23</td><td class="chg " title="今日 -7%（樣本不足或無成交，不判定）">-7%</td><td class="px" data-tab="wed2" data-side="C" data-k="47500" data-px="402"><span class="pxnum">402</span><span class="delta plain"></span></td><td class="be">47,902</td><td class="strike">47,500</td><td class="be">46,730</td><td class="px" data-tab="wed2" data-side="P" data-k="47500" data-px="770"><span class="pxnum">770</span><span class="delta plain"></span></td><td class="chg " title="今日 +9%（樣本不足或無成交，不判定）">+9%</td><td class="oi">162</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 80.1%,transparent 80.1% 100%)">165</td><td class="amt" data-tab="wed2" data-side="P" data-k="47500" data-amt="6352500" style="background:rgb(79,180,110)"><span class="amtnum">6,352,500</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">47,550</td><td class="be">46,865</td><td class="px" data-tab="wed2" data-side="P" data-k="47550" data-px="685"><span class="pxnum">685</span><span class="delta plain"></span></td><td class="chg " title="今日 -6%（樣本不足或無成交，不判定）">-6%</td><td class="oi"></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 1.9%,transparent 1.9% 100%)">4</td><td class="amt" data-tab="wed2" data-side="P" data-k="47550" data-amt="137000" style="background:rgb(233,246,237)"><span class="amtnum">137,000</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed2" data-side="C" data-k="47600" data-amt="36800" style="background:rgb(252,241,241)"><span class="amtnum">36,800</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 1.9%,transparent 1.9% 100%)">2</td><td class="oi">4</td><td class="chg " title="今日 -8%（樣本不足或無成交，不判定）">-8%</td><td class="px" data-tab="wed2" data-side="C" data-k="47600" data-px="368"><span class="pxnum">368</span><span class="delta plain"></span></td><td class="be">47,968</td><td class="strike">47,600</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">47,650</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed2" data-side="C" data-k="47700" data-amt="49950" style="background:rgb(251,238,238)"><span class="amtnum">49,950</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 2.9%,transparent 2.9% 100%)">3</td><td class="oi">14</td><td class="chg " title="今日 -11%（樣本不足或無成交，不判定）">-11%</td><td class="px" data-tab="wed2" data-side="C" data-k="47700" data-px="333"><span class="pxnum">333</span><span class="delta plain"></span></td><td class="be">48,033</td><td class="strike">47,700</td><td class="be">46,835</td><td class="px" data-tab="wed2" data-side="P" data-k="47700" data-px="865"><span class="pxnum">865</span><span class="delta plain"></span></td><td class="chg " title="今日 +5%（樣本不足或無成交，不判定）">+5%</td><td class="oi">2</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 0.5%,transparent 0.5% 100%)">1</td><td class="amt" data-tab="wed2" data-side="P" data-k="47700" data-amt="43250" style="background:rgb(243,250,245)"><span class="amtnum">43,250</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed2" data-side="C" data-k="47800" data-amt="63600" style="background:rgb(251,236,236)"><span class="amtnum">63,600</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 3.8%,transparent 3.8% 100%)">4</td><td class="oi">11</td><td class="chg " title="今日 +4%（樣本不足或無成交，不判定）">+4%</td><td class="px" data-tab="wed2" data-side="C" data-k="47800" data-px="318"><span class="pxnum">318</span><span class="delta plain"></span></td><td class="be">48,118</td><td class="strike">47,800</td><td class="be">46,845</td><td class="px" data-tab="wed2" data-side="P" data-k="47800" data-px="955"><span class="pxnum">955</span><span class="delta plain"></span></td><td class="chg " title="今日 +9%（樣本不足或無成交，不判定）">+9%</td><td class="oi"></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 100.0%,transparent 100.0% 100%)">206</td><td class="amt" data-tab="wed2" data-side="P" data-k="47800" data-amt="9836500" style="background:rgb(32,160,71)"><span class="amtnum">9,836,500</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed2" data-side="C" data-k="47900" data-amt="16300" style="background:rgb(253,246,246)"><span class="amtnum">16,300</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 1.0%,transparent 1.0% 100%)">1</td><td class="oi">2</td><td class="chg " title="今日 +13%（樣本不足或無成交，不判定）">+13%</td><td class="px" data-tab="wed2" data-side="C" data-k="47900" data-px="326"><span class="pxnum">326</span><span class="delta plain"></span></td><td class="be">48,226</td><td class="strike">47,900</td><td class="be">46,900</td><td class="px" data-tab="wed2" data-side="P" data-k="47900" data-px="1000"><span class="pxnum">1000</span><span class="delta plain"></span></td><td class="chg " title="今日 +5%（樣本不足或無成交，不判定）">+5%</td><td class="oi">1</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 97.1%,transparent 97.1% 100%)">200</td><td class="amt" data-tab="wed2" data-side="P" data-k="47900" data-amt="10000000" style="background:rgb(30,160,70)"><span class="amtnum">10,000,000</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed2" data-side="C" data-k="48000" data-amt="118250" style="background:rgb(249,228,228)"><span class="amtnum">118,250</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 10.6%,transparent 10.6% 100%)">11</td><td class="oi">16</td><td class="chg " title="今日 -14%（樣本不足或無成交，不判定）">-14%</td><td class="px" data-tab="wed2" data-side="C" data-k="48000" data-px="215"><span class="pxnum">215</span><span class="delta plain"></span></td><td class="be">48,215</td><td class="strike">48,000</td><td class="be">46,970</td><td class="px" data-tab="wed2" data-side="P" data-k="48000" data-px="1030"><span class="pxnum">1030</span><span class="delta plain"></span></td><td class="chg " title="今日 +1%（樣本不足或無成交，不判定）">+1%</td><td class="oi"></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 1.0%,transparent 1.0% 100%)">2</td><td class="amt" data-tab="wed2" data-side="P" data-k="48000" data-amt="103000" style="background:rgb(236,247,240)"><span class="amtnum">103,000</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed2" data-side="C" data-k="48100" data-amt="19600" style="background:rgb(253,245,245)"><span class="amtnum">19,600</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 1.9%,transparent 1.9% 100%)">2</td><td class="oi">2</td><td class="chg " title="今日 -9%（樣本不足或無成交，不判定）">-9%</td><td class="px" data-tab="wed2" data-side="C" data-k="48100" data-px="196"><span class="pxnum">196</span><span class="delta plain"></span></td><td class="be">48,296</td><td class="strike">48,100</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed2" data-side="C" data-k="48200" data-amt="194750" style="background:rgb(247,220,220)"><span class="amtnum">194,750</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 18.3%,transparent 18.3% 100%)">19</td><td class="oi">15</td><td class="chg " title="今日 +2%（樣本不足或無成交，不判定）">+2%</td><td class="px" data-tab="wed2" data-side="C" data-k="48200" data-px="205"><span class="pxnum">205</span><span class="delta plain"></span></td><td class="be">48,405</td><td class="strike">48,200</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed2" data-side="C" data-k="48300" data-amt="325600" style="background:rgb(245,208,208)"><span class="amtnum">325,600</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 42.3%,transparent 42.3% 100%)">44</td><td class="oi">4</td><td class="chg " title="今日 -17%（樣本不足或無成交，不判定）">-17%</td><td class="px" data-tab="wed2" data-side="C" data-k="48300" data-px="148"><span class="pxnum">148</span><span class="delta plain"></span></td><td class="be">48,448</td><td class="strike">48,300</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed2" data-side="C" data-k="48400" data-amt="164050" style="background:rgb(248,223,223)"><span class="amtnum">164,050</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 16.3%,transparent 16.3% 100%)">17</td><td class="oi">5</td><td class="chg " title="今日 +9%（樣本不足或無成交，不判定）">+9%</td><td class="px" data-tab="wed2" data-side="C" data-k="48400" data-px="193"><span class="pxnum">193</span><span class="delta plain"></span></td><td class="be">48,593</td><td class="strike">48,400</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed2" data-side="C" data-k="48500" data-amt="485000" style="background:rgb(243,197,197)"><span class="amtnum">485,000</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 93.3%,transparent 93.3% 100%)">97</td><td class="oi">20</td><td class="chg " title="今日 -33%（樣本不足或無成交，不判定）">-33%</td><td class="px" data-tab="wed2" data-side="C" data-k="48500" data-px="100"><span class="pxnum">100</span><span class="delta plain"></span></td><td class="be">48,600</td><td class="strike">48,500</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed2" data-side="C" data-k="48600" data-amt="42400" style="background:rgb(251,239,239)"><span class="amtnum">42,400</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 7.7%,transparent 7.7% 100%)">8</td><td class="oi">11</td><td class="chg " title="今日 -18%（樣本不足或無成交，不判定）">-18%</td><td class="px" data-tab="wed2" data-side="C" data-k="48600" data-px="106"><span class="pxnum">106</span><span class="delta plain"></span></td><td class="be">48,706</td><td class="strike">48,600</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed2" data-side="C" data-k="48700" data-amt="5000" style="background:rgb(254,250,250)"><span class="amtnum">5,000</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 1.0%,transparent 1.0% 100%)">1</td><td class="oi">9</td><td class="chg " title="今日 -7%（樣本不足或無成交，不判定）">-7%</td><td class="px" data-tab="wed2" data-side="C" data-k="48700" data-px="100"><span class="pxnum">100</span><span class="delta plain"></span></td><td class="be">48,800</td><td class="strike">48,700</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed2" data-side="C" data-k="48800" data-amt="10100" style="background:rgb(253,248,248)"><span class="amtnum">10,100</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 1.9%,transparent 1.9% 100%)">2</td><td class="oi">16</td><td class="chg " title="今日 +7%（樣本不足或無成交，不判定）">+7%</td><td class="px" data-tab="wed2" data-side="C" data-k="48800" data-px="101"><span class="pxnum">101</span><span class="delta plain"></span></td><td class="be">48,901</td><td class="strike">48,800</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed2" data-side="C" data-k="48900" data-amt="7100" style="background:rgb(253,249,249)"><span class="amtnum">7,100</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 1.9%,transparent 1.9% 100%)">2</td><td class="oi">2</td><td class="chg " title="今日 -9%（樣本不足或無成交，不判定）">-9%</td><td class="px" data-tab="wed2" data-side="C" data-k="48900" data-px="71"><span class="pxnum">71</span><span class="delta plain"></span></td><td class="be">48,971</td><td class="strike">48,900</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+</tbody>
+</table>
+</div>
+<div class="note">
+  <b>本頁重點</b>：買權最大量 46,500（104 口）、賣權最大量 47,800（206 口）。未平倉牆（09/18 收盤・09/30 到期）：買權壓力 <b>49,000</b>、賣權支撐 <b>42,200</b>、Put/Call 未平倉比 <b>3.28</b>。
+</div>
+</section>
+<section class="panel" data-panel="mth">
+<div class="sub sub-tab">10/21 到期（10月選）　·　⚠ 非今日行情　最後成交 09/18 04:59:58　·　本到期別成交 3,668 口</div>
+<div class="kpis">
+  <div class="kpi call"><div class="l">CALL 成交量</div><div class="v">847<small> 口</small></div></div>
+  <div class="kpi put"><div class="l">PUT 成交量</div><div class="v">703<small> 口</small></div></div>
+  <div class="kpi"><div class="l">Put/Call 量比</div><div class="v">0.83</div></div>
+  <div class="kpi"><div class="l">P/C 未平倉比</div><div class="v">0.75</div></div>
+  <div class="kpi"><div class="l">價平</div><div class="v">47,400</div></div>
+</div>
+<div class="mind flat">
+  <div class="mh">莊家意圖<span class="mq">觀望</span></div>
+  <div class="mlegs">
+    <div class="leg"><span class="lgl">標的之上・買權</span><span class="lgn">量能／樣本不足（0 口 / 0 檔），不判定</span></div>
+    <div class="leg"><span class="lgl">標的之下・賣權</span><span class="lgn">量能／樣本不足（0 口 / 0 檔），不判定</span></div>
+  </div>
+  <div class="mhow">買權側量能／樣本不足、賣權側量能／樣本不足，四象限不成立。莊家今天沒有表態，這種盤最容易兩面被巴 —— 先不做。</div>
+  <div class="mrange">台指參考區間　<b>47,000<small>盤中</small></b> ～ <b>48,000<small>盤中</small></b></div><div class="mshift">支撐上移 500 點（偏多）</div>
+  <div class="mnote">失效條件：等任一側出現明確的綠（築牆）或粉（追價）再看。</div>
+  <div class="mexp">⚠ 資料已超過 15 分鐘，方向判讀不可用 —— 到 Actions 手動 Run 一次再看</div>
+</div>
+<div class="zones">
+  <div class="zone res">
+    <div class="zh">盤中壓力區<small>標的之上・買權今日成交口數</small></div>
+    <div class="zrow"><b>48,000</b><span class="zm">263 口</span><span class="zv">1,124 萬</span><span class="zr ">+1%</span><span class="zt ">中性</span></div>
+<div class="zrow"><b>47,500</b><span class="zm">147 口</span><span class="zv">794 萬</span><span class="zr ">-1%</span><span class="zt ">中性</span></div>
+<div class="zrow"><b>48,800</b><span class="zm">27 口</span><span class="zv">66 萬</span><span class="zr ">-5%</span><span class="zt ">中性</span></div>
+    <div class="zn">昨日 買權 OI 牆 48,000　·　盤中重心與其一致</div>
+  </div>
+  <div class="zone sup">
+    <div class="zh">盤中支撐區<small>標的之下・賣權今日成交口數</small></div>
+    <div class="zrow"><b>47,000</b><span class="zm">379 口</span><span class="zv">1,857 萬</span><span class="zr ">+5%</span><span class="zt ">中性</span></div>
+<div class="zrow"><b>46,000</b><span class="zm">66 口</span><span class="zv">216 萬</span><span class="zr ">+9%</span><span class="zt ">中性</span></div>
+<div class="zrow"><b>46,500</b><span class="zm">48 口</span><span class="zv">198 萬</span><span class="zr ">+10%</span><span class="zt ">中性</span></div>
+    <div class="zn">昨日 賣權 OI 牆 46,500　·　盤中重心上移 500 點</div>
+  </div>
+</div>
+<div class="tblwrap">
+<table>
+<thead><tr>
+  <th class="grp-c">CALL 金額</th><th class="grp-c">口數</th><th class="grp-c">OI</th><th class="grp-c">今日</th><th class="grp-c">權利金</th><th class="grp-c">損益兩平</th>
+  <th>履約價</th>
+  <th class="grp-p">損益兩平</th><th class="grp-p">權利金</th><th class="grp-p">今日</th><th class="grp-p">OI</th><th class="grp-p">口數</th><th class="grp-p">PUT 金額</th>
+</tr></thead>
+<tbody>
+<tr class="drow"><td class="amt" data-tab="mth" data-side="C" data-k="46000" data-amt="2632500" style="background:rgb(236,163,163)"><span class="amtnum">2,632,500</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 10.3%,transparent 10.3% 100%)">27</td><td class="oi">153</td><td class="chg " title="今日 -5%（樣本不足或無成交，不判定）">-5%</td><td class="px" data-tab="mth" data-side="C" data-k="46000" data-px="1950"><span class="pxnum">1950</span><span class="delta plain"></span></td><td class="be">47,950</td><td class="strike">46,000</td><td class="be">45,345</td><td class="px" data-tab="mth" data-side="P" data-k="46000" data-px="655"><span class="pxnum">655</span><span class="delta plain"></span></td><td class="chg " title="今日 +9%（樣本不足或無成交，不判定）">+9%</td><td class="oi">307</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 17.4%,transparent 17.4% 100%)">66</td><td class="amt" data-tab="mth" data-side="P" data-k="46000" data-amt="2161500" style="background:rgb(186,225,198)"><span class="amtnum">2,161,500</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="mth" data-side="C" data-k="46100" data-amt="298500" style="background:rgb(249,227,227)"><span class="amtnum">298,500</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 1.1%,transparent 1.1% 100%)">3</td><td class="oi">80</td><td class="chg " title="今日 +1%（樣本不足或無成交，不判定）">+1%</td><td class="px" data-tab="mth" data-side="C" data-k="46100" data-px="1990"><span class="pxnum">1990</span><span class="delta plain"></span></td><td class="be">48,090</td><td class="strike">46,100</td><td class="be">45,395</td><td class="px" data-tab="mth" data-side="P" data-k="46100" data-px="705"><span class="pxnum">705</span><span class="delta plain"></span></td><td class="chg " title="今日 +12%（樣本不足或無成交，不判定）">+12%</td><td class="oi">59</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 1.3%,transparent 1.3% 100%)">5</td><td class="amt" data-tab="mth" data-side="P" data-k="46100" data-amt="176250" style="background:rgb(237,247,240)"><span class="amtnum">176,250</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="mth" data-side="C" data-k="46200" data-amt="1017500" style="background:rgb(244,200,200)"><span class="amtnum">1,017,500</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 4.2%,transparent 4.2% 100%)">11</td><td class="oi">34</td><td class="chg " title="今日 -3%（樣本不足或無成交，不判定）">-3%</td><td class="px" data-tab="mth" data-side="C" data-k="46200" data-px="1850"><span class="pxnum">1850</span><span class="delta plain"></span></td><td class="be">48,050</td><td class="strike">46,200</td><td class="be">45,480</td><td class="px" data-tab="mth" data-side="P" data-k="46200" data-px="720"><span class="pxnum">720</span><span class="delta plain"></span></td><td class="chg " title="今日 +10%（樣本不足或無成交，不判定）">+10%</td><td class="oi">59</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 5.8%,transparent 5.8% 100%)">22</td><td class="amt" data-tab="mth" data-side="P" data-k="46200" data-amt="792000" style="background:rgb(215,238,222)"><span class="amtnum">792,000</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="mth" data-side="C" data-k="46300" data-amt="265500" style="background:rgb(249,229,229)"><span class="amtnum">265,500</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 1.1%,transparent 1.1% 100%)">3</td><td class="oi">52</td><td class="chg " title="今日 -4%（樣本不足或無成交，不判定）">-4%</td><td class="px" data-tab="mth" data-side="C" data-k="46300" data-px="1770"><span class="pxnum">1770</span><span class="delta plain"></span></td><td class="be">48,070</td><td class="strike">46,300</td><td class="be">45,530</td><td class="px" data-tab="mth" data-side="P" data-k="46300" data-px="770"><span class="pxnum">770</span><span class="delta plain"></span></td><td class="chg " title="今日 +13%（樣本不足或無成交，不判定）">+13%</td><td class="oi">59</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 1.3%,transparent 1.3% 100%)">5</td><td class="amt" data-tab="mth" data-side="P" data-k="46300" data-amt="192500" style="background:rgb(236,247,240)"><span class="amtnum">192,500</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">46,400</td><td class="be">45,625</td><td class="px" data-tab="mth" data-side="P" data-k="46400" data-px="775"><span class="pxnum">775</span><span class="delta plain"></span></td><td class="chg " title="今日 +5%（樣本不足或無成交，不判定）">+5%</td><td class="oi">20</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 1.3%,transparent 1.3% 100%)">5</td><td class="amt" data-tab="mth" data-side="P" data-k="46400" data-amt="193750" style="background:rgb(236,247,239)"><span class="amtnum">193,750</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="mth" data-side="C" data-k="46500" data-amt="1385500" style="background:rgb(242,190,190)"><span class="amtnum">1,385,500</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 6.5%,transparent 6.5% 100%)">17</td><td class="oi">109</td><td class="chg " title="今日 -3%（樣本不足或無成交，不判定）">-3%</td><td class="px" data-tab="mth" data-side="C" data-k="46500" data-px="1630"><span class="pxnum">1630</span><span class="delta plain"></span></td><td class="be">48,130</td><td class="strike">46,500</td><td class="be">45,675</td><td class="px" data-tab="mth" data-side="P" data-k="46500" data-px="825"><span class="pxnum">825</span><span class="delta plain"></span></td><td class="chg " title="今日 +10%（樣本不足或無成交，不判定）">+10%</td><td class="oi">319</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 12.7%,transparent 12.7% 100%)">48</td><td class="amt" data-tab="mth" data-side="P" data-k="46500" data-amt="1980000" style="background:rgb(189,227,200)"><span class="amtnum">1,980,000</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="mth" data-side="C" data-k="46600" data-amt="1727000" style="background:rgb(240,182,182)"><span class="amtnum">1,727,000</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 8.4%,transparent 8.4% 100%)">22</td><td class="oi">198</td><td class="chg " title="今日 -2%（樣本不足或無成交，不判定）">-2%</td><td class="px" data-tab="mth" data-side="C" data-k="46600" data-px="1570"><span class="pxnum">1570</span><span class="delta plain"></span></td><td class="be">48,170</td><td class="strike">46,600</td><td class="be">45,720</td><td class="px" data-tab="mth" data-side="P" data-k="46600" data-px="880"><span class="pxnum">880</span><span class="delta plain"></span></td><td class="chg " title="今日 +10%（樣本不足或無成交，不判定）">+10%</td><td class="oi">40</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 2.9%,transparent 2.9% 100%)">11</td><td class="amt" data-tab="mth" data-side="P" data-k="46600" data-amt="484000" style="background:rgb(224,242,230)"><span class="amtnum">484,000</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">46,700</td><td class="be">45,825</td><td class="px" data-tab="mth" data-side="P" data-k="46700" data-px="875"><span class="pxnum">875</span><span class="delta plain"></span></td><td class="chg " title="今日 +4%（樣本不足或無成交，不判定）">+4%</td><td class="oi">46</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 0.5%,transparent 0.5% 100%)">2</td><td class="amt" data-tab="mth" data-side="P" data-k="46700" data-amt="87500" style="background:rgb(243,250,245)"><span class="amtnum">87,500</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="mth" data-side="C" data-k="46800" data-amt="700000" style="background:rgb(246,210,210)"><span class="amtnum">700,000</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 3.8%,transparent 3.8% 100%)">10</td><td class="oi">120</td><td class="chg " title="今日 -8%（樣本不足或無成交，不判定）">-8%</td><td class="px" data-tab="mth" data-side="C" data-k="46800" data-px="1400"><span class="pxnum">1400</span><span class="delta plain"></span></td><td class="be">48,200</td><td class="strike">46,800</td><td class="be">45,850</td><td class="px" data-tab="mth" data-side="P" data-k="46800" data-px="950"><span class="pxnum">950</span><span class="delta plain"></span></td><td class="chg " title="今日 +10%（樣本不足或無成交，不判定）">+10%</td><td class="oi">42</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 7.7%,transparent 7.7% 100%)">29</td><td class="amt" data-tab="mth" data-side="P" data-k="46800" data-amt="1377500" style="background:rgb(201,232,210)"><span class="amtnum">1,377,500</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="mth" data-side="C" data-k="46900" data-amt="916500" style="background:rgb(244,203,203)"><span class="amtnum">916,500</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 4.9%,transparent 4.9% 100%)">13</td><td class="oi">107</td><td class="chg " title="今日 -2%（樣本不足或無成交，不判定）">-2%</td><td class="px" data-tab="mth" data-side="C" data-k="46900" data-px="1410"><span class="pxnum">1410</span><span class="delta plain"></span></td><td class="be">48,310</td><td class="strike">46,900</td><td class="be">45,930</td><td class="px" data-tab="mth" data-side="P" data-k="46900" data-px="970"><span class="pxnum">970</span><span class="delta plain"></span></td><td class="chg " title="今日 +6%（樣本不足或無成交，不判定）">+6%</td><td class="oi">34</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 2.9%,transparent 2.9% 100%)">11</td><td class="amt" data-tab="mth" data-side="P" data-k="46900" data-amt="533500" style="background:rgb(223,241,228)"><span class="amtnum">533,500</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="mth" data-side="C" data-k="47000" data-amt="8905000" style="background:rgb(218,76,76)"><span class="amtnum">8,905,000</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 52.1%,transparent 52.1% 100%)">137</td><td class="oi">907</td><td class="chg " title="今日 -4%（樣本不足或無成交，不判定）">-4%</td><td class="px" data-tab="mth" data-side="C" data-k="47000" data-px="1300"><span class="pxnum">1300</span><span class="delta plain"></span></td><td class="be">48,300</td><td class="strike">47,000</td><td class="be">46,020</td><td class="px" data-tab="mth" data-side="P" data-k="47000" data-px="980"><span class="pxnum">980</span><span class="delta plain"></span></td><td class="chg " title="今日 +5%（樣本不足或無成交，不判定）">+5%</td><td class="oi">279</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 100.0%,transparent 100.0% 100%)">379</td><td class="amt" data-tab="mth" data-side="P" data-k="47000" data-amt="18571000" style="background:rgb(30,160,70)"><span class="amtnum">18,571,000</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="mth" data-side="C" data-k="47100" data-amt="591500" style="background:rgb(246,214,214)"><span class="amtnum">591,500</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 4.9%,transparent 4.9% 100%)">13</td><td class="oi">394</td><td class="chg " title="今日 -31%（樣本不足或無成交，不判定）">-31%</td><td class="px" data-tab="mth" data-side="C" data-k="47100" data-px="910"><span class="pxnum">910</span><span class="delta plain"></span></td><td class="be">48,010</td><td class="strike">47,100</td><td class="be">46,050</td><td class="px" data-tab="mth" data-side="P" data-k="47100" data-px="1050"><span class="pxnum">1050</span><span class="delta plain"></span></td><td class="chg " title="今日 +7%（樣本不足或無成交，不判定）">+7%</td><td class="oi">12</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 2.1%,transparent 2.1% 100%)">8</td><td class="amt" data-tab="mth" data-side="P" data-k="47100" data-amt="420000" style="background:rgb(227,243,231)"><span class="amtnum">420,000</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="mth" data-side="C" data-k="47200" data-amt="1652000" style="background:rgb(240,184,184)"><span class="amtnum">1,652,000</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 10.6%,transparent 10.6% 100%)">28</td><td class="oi">476</td><td class="chg " title="今日 -6%（樣本不足或無成交，不判定）">-6%</td><td class="px" data-tab="mth" data-side="C" data-k="47200" data-px="1180"><span class="pxnum">1180</span><span class="delta plain"></span></td><td class="be">48,380</td><td class="strike">47,200</td><td class="be">46,100</td><td class="px" data-tab="mth" data-side="P" data-k="47200" data-px="1100"><span class="pxnum">1100</span><span class="delta plain"></span></td><td class="chg " title="今日 +9%（樣本不足或無成交，不判定）">+9%</td><td class="oi">14</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 3.7%,transparent 3.7% 100%)">14</td><td class="amt" data-tab="mth" data-side="P" data-k="47200" data-amt="770000" style="background:rgb(215,238,222)"><span class="amtnum">770,000</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="mth" data-side="C" data-k="47300" data-amt="590000" style="background:rgb(246,214,214)"><span class="amtnum">590,000</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 3.8%,transparent 3.8% 100%)">10</td><td class="oi">58</td><td class="chg " title="今日 -2%（樣本不足或無成交，不判定）">-2%</td><td class="px" data-tab="mth" data-side="C" data-k="47300" data-px="1180"><span class="pxnum">1180</span><span class="delta plain"></span></td><td class="be">48,480</td><td class="strike">47,300</td><td class="be">46,300</td><td class="px" data-tab="mth" data-side="P" data-k="47300" data-px="1000"><span class="pxnum">1000</span><span class="delta plain"></span></td><td class="chg " title="今日 -5%（樣本不足或無成交，不判定）">-5%</td><td class="oi">19</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 9.0%,transparent 9.0% 100%)">34</td><td class="amt" data-tab="mth" data-side="P" data-k="47300" data-amt="1700000" style="background:rgb(194,229,205)"><span class="amtnum">1,700,000</span><span class="delta"></span></td></tr>
+<tr class="drow atm"><td class="amt" data-tab="mth" data-side="C" data-k="47400" data-amt="880000" style="background:rgb(244,204,204)"><span class="amtnum">880,000</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 6.1%,transparent 6.1% 100%)">16</td><td class="oi">60</td><td class="chg " title="今日 -3%（樣本不足或無成交，不判定）">-3%</td><td class="px" data-tab="mth" data-side="C" data-k="47400" data-px="1100"><span class="pxnum">1100</span><span class="delta plain"></span></td><td class="be">48,500</td><td class="strike">47,400</td><td class="be">46,250</td><td class="px" data-tab="mth" data-side="P" data-k="47400" data-px="1150"><span class="pxnum">1150</span><span class="delta plain"></span></td><td class="chg " title="今日 +2%（樣本不足或無成交，不判定）">+2%</td><td class="oi">14</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 4.2%,transparent 4.2% 100%)">16</td><td class="amt" data-tab="mth" data-side="P" data-k="47400" data-amt="920000" style="background:rgb(211,236,219)"><span class="amtnum">920,000</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="mth" data-side="C" data-k="47500" data-amt="7938000" style="background:rgb(221,87,87)"><span class="amtnum">7,938,000</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 55.9%,transparent 55.9% 100%)">147</td><td class="oi">209</td><td class="chg " title="今日 -1%（樣本不足或無成交，不判定）">-1%</td><td class="px" data-tab="mth" data-side="C" data-k="47500" data-px="1080"><span class="pxnum">1080</span><span class="delta plain"></span></td><td class="be">48,580</td><td class="strike">47,500</td><td class="be">46,270</td><td class="px" data-tab="mth" data-side="P" data-k="47500" data-px="1230"><span class="pxnum">1230</span><span class="delta plain"></span></td><td class="chg " title="今日 +4%（樣本不足或無成交，不判定）">+4%</td><td class="oi">102</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 9.5%,transparent 9.5% 100%)">36</td><td class="amt" data-tab="mth" data-side="P" data-k="47500" data-amt="2214000" style="background:rgb(185,225,197)"><span class="amtnum">2,214,000</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="strike">47,600</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="amt" data-tab="mth" data-side="C" data-k="47700" data-amt="188000" style="background:rgb(250,233,233)"><span class="amtnum">188,000</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 1.5%,transparent 1.5% 100%)">4</td><td class="oi">67</td><td class="chg " title="今日 -5%（樣本不足或無成交，不判定）">-5%</td><td class="px" data-tab="mth" data-side="C" data-k="47700" data-px="940"><span class="pxnum">940</span><span class="delta plain"></span></td><td class="be">48,640</td><td class="strike">47,700</td><td class="be">46,390</td><td class="px" data-tab="mth" data-side="P" data-k="47700" data-px="1310"><span class="pxnum">1310</span><span class="delta plain"></span></td><td class="chg " title="今日 +5%（樣本不足或無成交，不判定）">+5%</td><td class="oi">26</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 0.8%,transparent 0.8% 100%)">3</td><td class="amt" data-tab="mth" data-side="P" data-k="47700" data-amt="196500" style="background:rgb(236,247,239)"><span class="amtnum">196,500</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="mth" data-side="C" data-k="47800" data-amt="663750" style="background:rgb(246,212,212)"><span class="amtnum">663,750</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 5.7%,transparent 5.7% 100%)">15</td><td class="oi">55</td><td class="chg " title="今日 -6%（樣本不足或無成交，不判定）">-6%</td><td class="px" data-tab="mth" data-side="C" data-k="47800" data-px="885"><span class="pxnum">885</span><span class="delta plain"></span></td><td class="be">48,685</td><td class="strike">47,800</td><td class="be">46,520</td><td class="px" data-tab="mth" data-side="P" data-k="47800" data-px="1280"><span class="pxnum">1280</span><span class="delta plain"></span></td><td class="chg " title="今日 -2%（樣本不足或無成交，不判定）">-2%</td><td class="oi">7</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 0.3%,transparent 0.3% 100%)">1</td><td class="amt" data-tab="mth" data-side="P" data-k="47800" data-amt="64000" style="background:rgb(245,250,246)"><span class="amtnum">64,000</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="mth" data-side="C" data-k="47900" data-amt="42000" style="background:rgb(253,245,245)"><span class="amtnum">42,000</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 0.4%,transparent 0.4% 100%)">1</td><td class="oi">33</td><td class="chg " title="今日 -5%（樣本不足或無成交，不判定）">-5%</td><td class="px" data-tab="mth" data-side="C" data-k="47900" data-px="840"><span class="pxnum">840</span><span class="delta plain"></span></td><td class="be">48,740</td><td class="strike">47,900</td><td class="be">46,570</td><td class="px" data-tab="mth" data-side="P" data-k="47900" data-px="1330"><span class="pxnum">1330</span><span class="delta plain"></span></td><td class="chg " title="今日 -1%（樣本不足或無成交，不判定）">-1%</td><td class="oi">7</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 0.3%,transparent 0.3% 100%)">1</td><td class="amt" data-tab="mth" data-side="P" data-k="47900" data-amt="66500" style="background:rgb(244,250,246)"><span class="amtnum">66,500</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="mth" data-side="C" data-k="48000" data-amt="11243250" style="background:rgb(214,52,52)"><span class="amtnum">11,243,250</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 100.0%,transparent 100.0% 100%)">263</td><td class="oi">715</td><td class="chg " title="今日 +1%（樣本不足或無成交，不判定）">+1%</td><td class="px" data-tab="mth" data-side="C" data-k="48000" data-px="855"><span class="pxnum">855</span><span class="delta plain"></span></td><td class="be">48,855</td><td class="strike">48,000</td><td class="be">46,510</td><td class="px" data-tab="mth" data-side="P" data-k="48000" data-px="1490"><span class="pxnum">1490</span><span class="delta plain"></span></td><td class="chg " title="今日 +6%（樣本不足或無成交，不判定）">+6%</td><td class="oi">51</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 0.8%,transparent 0.8% 100%)">3</td><td class="amt" data-tab="mth" data-side="P" data-k="48000" data-amt="223500" style="background:rgb(235,246,238)"><span class="amtnum">223,500</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="mth" data-side="C" data-k="48100" data-amt="223500" style="background:rgb(250,231,231)"><span class="amtnum">223,500</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 2.3%,transparent 2.3% 100%)">6</td><td class="oi">78</td><td class="chg " title="今日 -7%（樣本不足或無成交，不判定）">-7%</td><td class="px" data-tab="mth" data-side="C" data-k="48100" data-px="745"><span class="pxnum">745</span><span class="delta plain"></span></td><td class="be">48,845</td><td class="strike">48,100</td><td class="be">46,550</td><td class="px" data-tab="mth" data-side="P" data-k="48100" data-px="1550"><span class="pxnum">1550</span><span class="delta plain"></span></td><td class="chg " title="今日 +6%（樣本不足或無成交，不判定）">+6%</td><td class="oi">2</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 1.1%,transparent 1.1% 100%)">4</td><td class="amt" data-tab="mth" data-side="P" data-k="48100" data-amt="310000" style="background:rgb(231,244,235)"><span class="amtnum">310,000</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="mth" data-side="C" data-k="48200" data-amt="208500" style="background:rgb(250,232,232)"><span class="amtnum">208,500</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 2.3%,transparent 2.3% 100%)">6</td><td class="oi">135</td><td class="chg " title="今日 -7%（樣本不足或無成交，不判定）">-7%</td><td class="px" data-tab="mth" data-side="C" data-k="48200" data-px="695"><span class="pxnum">695</span><span class="delta plain"></span></td><td class="be">48,895</td><td class="strike">48,200</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="amt" data-tab="mth" data-side="C" data-k="48300" data-amt="111750" style="background:rgb(251,238,238)"><span class="amtnum">111,750</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 1.1%,transparent 1.1% 100%)">3</td><td class="oi">106</td><td class="chg " title="今日 +6%（樣本不足或無成交，不判定）">+6%</td><td class="px" data-tab="mth" data-side="C" data-k="48300" data-px="745"><span class="pxnum">745</span><span class="delta plain"></span></td><td class="be">49,045</td><td class="strike">48,300</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="amt" data-tab="mth" data-side="C" data-k="48400" data-amt="35750" style="background:rgb(253,246,246)"><span class="amtnum">35,750</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 0.4%,transparent 0.4% 100%)">1</td><td class="oi">127</td><td class="chg " title="今日 +11%（樣本不足或無成交，不判定）">+11%</td><td class="px" data-tab="mth" data-side="C" data-k="48400" data-px="715"><span class="pxnum">715</span><span class="delta plain"></span></td><td class="be">49,115</td><td class="strike">48,400</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="amt" data-tab="mth" data-side="C" data-k="48500" data-amt="574750" style="background:rgb(247,215,215)"><span class="amtnum">574,750</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 7.2%,transparent 7.2% 100%)">19</td><td class="oi">176</td><td class="chg " title="今日 -2%（樣本不足或無成交，不判定）">-2%</td><td class="px" data-tab="mth" data-side="C" data-k="48500" data-px="605"><span class="pxnum">605</span><span class="delta plain"></span></td><td class="be">49,105</td><td class="strike">48,500</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="amt" data-tab="mth" data-side="C" data-k="48600" data-amt="335500" style="background:rgb(249,225,225)"><span class="amtnum">335,500</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 4.2%,transparent 4.2% 100%)">11</td><td class="oi">51</td><td class="chg " title="今日 +3%（樣本不足或無成交，不判定）">+3%</td><td class="px" data-tab="mth" data-side="C" data-k="48600" data-px="610"><span class="pxnum">610</span><span class="delta plain"></span></td><td class="be">49,210</td><td class="strike">48,600</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="amt" data-tab="mth" data-side="C" data-k="48700" data-amt="309000" style="background:rgb(249,226,226)"><span class="amtnum">309,000</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 4.6%,transparent 4.6% 100%)">12</td><td class="oi">48</td><td class="chg " title="今日 -7%（樣本不足或無成交，不判定）">-7%</td><td class="px" data-tab="mth" data-side="C" data-k="48700" data-px="515"><span class="pxnum">515</span><span class="delta plain"></span></td><td class="be">49,215</td><td class="strike">48,700</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="amt" data-tab="mth" data-side="C" data-k="48800" data-amt="660150" style="background:rgb(246,212,212)"><span class="amtnum">660,150</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 10.3%,transparent 10.3% 100%)">27</td><td class="oi">50</td><td class="chg " title="今日 -5%（樣本不足或無成交，不判定）">-5%</td><td class="px" data-tab="mth" data-side="C" data-k="48800" data-px="489"><span class="pxnum">489</span><span class="delta plain"></span></td><td class="be">49,289</td><td class="strike">48,800</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="amt" data-tab="mth" data-side="C" data-k="48900" data-amt="555500" style="background:rgb(247,216,216)"><span class="amtnum">555,500</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 8.4%,transparent 8.4% 100%)">22</td><td class="oi">74</td><td class="chg " title="今日 +2%（樣本不足或無成交，不判定）">+2%</td><td class="px" data-tab="mth" data-side="C" data-k="48900" data-px="505"><span class="pxnum">505</span><span class="delta plain"></span></td><td class="be">49,405</td><td class="strike">48,900</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="e"></td></tr>
+</tbody>
+</table>
+</div>
+<div class="note">
+  <b>本頁重點</b>：買權最大量 48,000（263 口）、賣權最大量 47,000（379 口）。未平倉牆（09/18 收盤・10/21 到期）：買權壓力 <b>50,000</b>、賣權支撐 <b>40,000</b>、Put/Call 未平倉比 <b>0.75</b>。
+</div>
+</section>
+<div class="legend">
+  <span><span class="sw" style="background:linear-gradient(90deg,transparent,rgba(214,52,52,.42))"></span>買權口數分布（由右往左）</span>
+  <span><span class="sw" style="background:linear-gradient(90deg,rgba(30,160,70,.42),transparent)"></span>賣權口數分布（由左往右）</span>
+  <span><span class="sw" style="background:linear-gradient(90deg,#fff,rgb(214,52,52))"></span>金額熱度</span>
+  <span><span class="sw" style="background:var(--atm);border:1px solid #d8b24a"></span>價平</span>
+  <span><b style="color:#ff6a5c">▲</b> 較上一版增加　<b style="color:#37d67a">▼</b> 較上一版減少（金額與權利金皆有）</span>
+  <span>網頁每 60 秒自動重新整理</span>
+</div>
+<div class="note">
+  <b>即時欄位</b>（MIS）：權利金、口數、金額、今日漲跌、損益兩平；金額 = 權利金 × 50 × 口數，為今日累積。<br>
+  <b>盤中撐壓怎麼來的</b>：OI 盤中不更新，所以牆的位置改用<b>今日累積成交口數</b>抓 ——
+  壓力取標的之上口數最大的買權、支撐取標的之下口數最大的賣權，範圍限在畫面的 ±1,500 點視窗內。
+  用口數而非金額，是因為要跟 OI 牆對照，而 OI 的單位就是口數；而且金額 = 權利金×50×口數，
+  權利金隨著接近價平而變大，用金額排幾乎必然選出離標的最近那一檔，那是價平的定義而非市場押注的位置。
+  口數欄的分布條回答「牆有多高」，金額欄的熱度回答「押了多少錢」。
+  一側價外合計不足 500 口時直接標示量能不足，不硬給價位。<br>
+  <b>賣方築牆／買方追價</b>：直接看漲跌%會誤判 —— 指數一漲，全部買權一起漲、全部賣權一起跌，那是方向 beta。
+  本表扣掉<b>同側所有履約價漲跌%的中位數</b>，剩下的「超額」才是這一檔相對同儕的異常強弱：
+  跌得比同儕兇（綠）＝有人壓價收租，牆較硬；漲得比同儕兇（紅）＝有人追價，該價位可能被挑戰。
+  顯著門檻用超額絕對值的中位數自適應，不是固定值。<br>
+  <b>莊家意圖（四象限）</b>：給只做台指、不做選擇權的人用。把每一側價外檔位的超額做<b>量加權</b>
+  壓成一個分數 —— 等權平均必然≈0（中位數的定義就保證一半在上一半在下），量加權問的才是
+  「今天的錢押在被壓的檔還是被追的檔」。錢集中在被壓的檔＝賣方主導（買權側 SC、賣權側 SP），
+  集中在被追的檔＝買方主導（BC／BP）。兩側交叉成四象限：SC+SP＝區間盤、BC+SP＝偏多、
+  SC+BP＝偏空、BC+BP＝待變盤（買波動不買方向，等突破）。任一側中性或量能不足就顯示<b>觀望</b>，
+  不硬湊結論。上下緣優先取盤中口數重心，沒有才退回昨日 OI 牆。
+  <b>資料超過 15 分鐘整張卡會轉灰停用</b>，因為方向判讀對新鮮度的要求比表格高得多。<br>
+  <b>牆在移動</b>：卡片下緣比對盤中金額重心與昨日 OI 牆。兩者背離超過 100 點，代表今天的資金押在別的價位，
+  昨日那道支撐壓力已經不是同一個位置。<br>
+  <b>分頁</b>：四個分頁是不同結算日的合約，照結算先後排（本週三＝W 系列或月選、
+  本週五＝F 系列、下週三＝下一個週三到期的合約、最後一頁＝月選），
+  各自獨立計算量比、價平與 ▲▼ 增減；切換後的選擇會記住，自動重整不會跳回去。
+  <b>下週三</b>是還沒進入結算週的部位，量通常只有本週的零頭，牆的位置常是先卡好的
+  初始陣地，看的是下一段的區間預期，不要拿來當今天的當沖依據。
+  <b>月選（隔月）</b>那一頁挑的是「最近一個還沒出現在前三頁的月選」——
+  月選結算週當天它就是下個月，結算完之後換成剛變近月的那個月，所以標題會在
+  「月選結算」與「隔月結算」之間換，看小字的到期日最準。這一頁的重點不是盤中撐壓
+  （剛掛的月選一天可能只有幾百口），而是<b>昨日 OI 那道牆</b>：法人的月線級部位
+  先卡在哪裡。量能不足時盤中撐壓與莊家意圖都會自動擋掉不顯示，只留 OI 牆。<br>
+  <b>盤中多空空間</b>（最上面那張卡）：全市場約 2,700 檔的即時報價壓成三條線 ——
+  紅綠棒是<b>上漲家數 − 下跌家數</b>（狀態量），黃線是同一個數字減掉自己前 30 分鐘的
+  移動平均＝<b>去趨勢</b>後的短期動能（直接畫水位跟紅綠棒相關性 r=+0.88，等於把同一件事
+  畫兩次）。<b>藍線走右軸，是另一個來源的東西</b>：成交額前 100 大的買賣方向淨值（−1~+1），
+  也就是「大錢站哪一邊」。兩個軸的 0 對齊，所以<b>家數在零軸下、藍線在零軸上</b>
+  就是「個股在跌、大錢在買」——2026-09-07 就是這樣，指數 +1.67% 而家數 −419。
+  同向的日子藍線不帶新資訊；實測它對家數變化<b>沒有領先性</b>，不要當提前訊號用。
+  資料來自另一支常駐 Cloudflare 的 Worker（cron 每 5 分鐘掃一輪存進 KV），
+  瀏覽器直接向它拿，所以<b>這張卡的新舊跟本頁的產生時間無關</b>，它自己每 60 秒重抓一次；
+  Worker 掛掉時整張卡不顯示，不影響下面的選擇權報價。點卡片右上角可以進到完整版看型態判讀。
+  台指選擇權讀的是「錢押在哪個價位」，這張卡讀的是「多少家公司站在多方」，兩者互為補充。<br>
+  <b>限制</b>：OI 為期交所盤後公布，盤中沿用前一日；成交金額只知道成交，不知道那一口是新倉還是平倉，
+  所以「築牆」是傾向推論而非事實。此表為 TAIFEX MIS 約每 5 秒的準即時報價，非逐筆。
+</div>
+</div>
+<script>
+(function(){
+  var btns = [].slice.call(document.querySelectorAll('.tab'));
+  if(!btns.length) return;
+  var panels = [].slice.call(document.querySelectorAll('.panel'));
+  function show(id){
+    btns.forEach(function(b){ b.classList.toggle('on', b.getAttribute('data-tab') === id); });
+    panels.forEach(function(p){ p.classList.toggle('on', p.getAttribute('data-panel') === id); });
+    try { localStorage.setItem('txo_tab', id); } catch(e){}
+  }
+  var ids = btns.map(function(b){ return b.getAttribute('data-tab'); });
+  var saved = null;
+  try { saved = localStorage.getItem('txo_tab'); } catch(e){}
+  show(ids.indexOf(saved) >= 0 ? saved : ids[0]);
+  btns.forEach(function(b){
+    b.addEventListener('click', function(){ show(b.getAttribute('data-tab')); });
+  });
+})();
+</script>
+
+<script>
+(function(){
+  var wrap = document.querySelector('.wrap');
+  if(!wrap) return;
+  var GEN = wrap.getAttribute('data-gen') || '';
+  // 金額格與權利金格一起記；key = 分頁:側別:履約價:a(金額)/p(權利金)
+  // 分頁要進 key，否則週三／週五同一履約價會互相蓋掉基準。
+  var cells = [].slice.call(document.querySelectorAll('td[data-amt],td[data-px]'));
+  function keyOf(td){
+    return td.getAttribute('data-tab') + ':' + td.getAttribute('data-side') + ':' +
+           td.getAttribute('data-k') + (td.hasAttribute('data-amt') ? ':a' : ':p');
+  }
+  var cur = {};
+  cells.forEach(function(td){
+    cur[keyOf(td)] = +(td.getAttribute('data-amt') || td.getAttribute('data-px'));
+  });
+  var prev = null;
+  try { prev = JSON.parse(localStorage.getItem('txo_snap2') || 'null'); } catch(e){}
+  var base = null;
+  if(!prev){
+    localStorage.setItem('txo_snap2', JSON.stringify({gen:GEN, cur:cur, base:cur}));
+  } else if(prev.gen === GEN){
+    base = prev.base;                        // 同一版重整：沿用既有基準
+  } else {
+    base = prev.cur;                         // 換新版：上一版數字成為新基準
+    localStorage.setItem('txo_snap2', JSON.stringify({gen:GEN, cur:cur, base:prev.cur}));
+  }
+  if(!base) return;                          // 第一次看：尚無可比較的基準
+  function fmtAmt(n){ return n.toLocaleString('en-US'); }
+  function fmtPx(n){ return String(Math.round(n * 100) / 100); }   // 權利金保留小數
+  cells.forEach(function(td){
+    var key = keyOf(td);
+    if(!(key in base)) return;
+    var d = cur[key] - base[key];
+    if(Math.abs(d) < 1e-9) return;
+    var s = td.querySelector('.delta');
+    if(!s) return;
+    var isAmt = td.hasAttribute('data-amt');
+    s.textContent = (d > 0 ? '▲ ' : '▼ ') + (isAmt ? fmtAmt(Math.abs(d)) : fmtPx(Math.abs(d)));
+    s.className = 'delta' + (isAmt ? '' : ' plain') + (d > 0 ? ' up' : ' down');
+    s.style.display = 'inline-block';
+  });
+})();
+// 顯示「這份資料是幾分鐘前抓的」。雲端排程會被 GitHub 跳過，光看產生時間不容易
+// 察覺已經停更很久，所以每 10 秒重算一次年齡：15 分鐘以上轉黃、40 分鐘以上轉紅。
+(function(){
+  var el = document.getElementById('age');
+  var wrap = document.querySelector('.wrap');
+  if(!el || !wrap) return;
+  var epoch = parseInt(wrap.getAttribute('data-epoch') || '0', 10);
+  if(!epoch) return;
+  // 莊家意圖卡跟資料年齡綁在一起：表格慢 15 分鐘還能看，方向判讀慢 15 分鐘
+  // 會害人做反，所以過期就整張轉灰、蓋上警語，不留一個看起來很篤定的結論。
+  var minds = [].slice.call(document.querySelectorAll('.mind'));
+  function tick(){
+    var sec = Math.max(0, Math.floor(Date.now()/1000) - epoch);
+    minds.forEach(function(m){ m.classList.toggle('expired', sec >= 900); });
+    var txt;
+    if(sec < 60)            txt = sec + ' 秒前';
+    else if(sec < 3600)     txt = Math.floor(sec/60) + ' 分鐘前';
+    else                    txt = Math.floor(sec/3600) + ' 小時 ' + Math.floor((sec%3600)/60) + ' 分前';
+    el.textContent = '資料 ' + txt;
+    el.className = sec >= 2400 ? 'dead' : (sec >= 900 ? 'stale' : '');
+  }
+  tick();
+  setInterval(tick, 10000);
+})();
+// 每 60 秒帶時間戳重新載入：繞過 iPhone 主畫面 App 與 CDN 的快取，永遠抓最新那版。
+setTimeout(function(){
+  location.replace(location.pathname + '?t=' + Date.now());
+}, 60000);
+</script>
+
+<script>
+/* 盤中多空空間卡：跟 Cloudflare Worker 要一份 KV 快照，在瀏覽器端算兩條線並畫圖。
+   為什麼放前端：掃全市場一輪 20 秒，本頁的請求扛不住（見 4.9 節註解）。
+   抓不到就整張卡不顯示 —— 頁面最上面留一個空框比沒有這張卡更糟。 */
+(function(){
+  var API  = 'https://duokong.emma198574.workers.dev/api/day';
+  var 快   = 6;      // 黃線：多空空間 − 前 6 根（30 分鐘）均值
+                     // 藍線＝Worker 回傳的 bmv（主力錢投票，−1~+1），不需要參數
+  var 全格 = 54;     // 09:00~13:30 共 54 格。x 軸永遠鋪滿一整天，
+                     // 盤中資料一根根長出來時比例才不會一直跳動。
+
+  var box = document.getElementById('dk'), cv = document.getElementById('dkcv');
+  if(!box || !cv) return;
+  var rows = [], 布局 = null;
+
+  function 色(k){ return getComputedStyle(document.documentElement).getPropertyValue(k).trim(); }
+  function 簽(v){ return (v > 0 ? '+' : '') + Math.round(v).toLocaleString('en-US'); }
+
+  /* 家數 − 前 k 根（含當根）移動平均。去趨勢後線講的是動能不是水位。 */
+  function 離均差(s, k){
+    return s.map(function(_, i){
+      var seg = s.slice(Math.max(0, i - k + 1), i + 1);
+      var m = 0; seg.forEach(function(v){ m += v; });
+      return s[i] - m / seg.length;
+    });
+  }
+
+  /* 藍線直接用 Worker 存好的 bmv（成交額前 100 大的買賣方向淨值）。
+     收盤 13:30 那一格沒有成交額增量、bmv 會是 null，畫線時要斷開不能當 0。 */
+  function 算三線(rs){
+    var s = rs.map(function(r){ return r.s; });
+    var f = 離均差(s, 快);
+    rs.forEach(function(r, i){
+      r.y = Math.round(f[i]);
+      r.b = (r.bmv === null || r.bmv === undefined) ? null : r.bmv;
+    });
+    return rs;
+  }
+
+  function 錢簽(v){ return (v === null || v === undefined) ? '—' : (v > 0 ? '+' : '') + v.toFixed(2); }
+
+  /* 涵蓋率＝這一輪 MIS 回了幾筆 ÷ 掃描池。抓取失敗在 Worker 那邊是靜默的
+     （回空陣列、家數變小、線照畫），2026-09-07 盤中每格只掃到 55~130 檔卻毫無異狀，
+     兩天後對圖才發現。所以卡片一定要把涵蓋率講出來。
+     rt 是 2026-09-07 之後才存的，舊資料只能退回用有效家數估、門檻放寬。 */
+  function 算涵蓋(rs, day){
+    rs.forEach(function(r){
+      var 池 = r.pl || day.pool || 0;
+      r.舊 = (r.rt === null || r.rt === undefined);
+      r.cov = 池 ? (r.舊 ? r.n / 池 : r.rt / 池) : null;
+      r.缺 = (r.cov !== null) && (r.cov < (r.舊 ? 0.5 : 0.9));
+    });
+  }
+
+  function 畫(){
+    var dpr = window.devicePixelRatio || 1;
+    var W = cv.parentNode.clientWidth || 320, H = 152;
+    cv.width = W * dpr; cv.height = H * dpr;
+    var c = cv.getContext('2d'); c.setTransform(dpr, 0, 0, dpr, 0, 0);
+    c.clearRect(0, 0, W, H);
+    if(!rows.length) return;
+
+    var L = 36, R = 24, T = 8, B = 18, pw = W - L - R, ph = H - T - B;
+    var vals = [0];
+    rows.forEach(function(r){ vals.push(r.s, r.y); });   // 錢走右軸，不參與家數的軸範圍
+    var mx = Math.max.apply(null, vals), mn = Math.min.apply(null, vals);
+    var pad = (mx - mn) * 0.08 || 50; mx += pad; mn -= pad;
+    var step = pw / 全格;
+    var X = function(i){ return L + step * (i + 0.5); };
+    var Y = function(v){ return T + ph * (mx - v) / (mx - mn); };
+    布局 = { L: L, step: step, X: X };
+
+    c.strokeStyle = 色('--line'); c.lineWidth = 1;
+    [200, -200].forEach(function(v){
+      if(v > mx || v < mn) return;
+      c.setLineDash([4, 4]); c.beginPath();
+      c.moveTo(L, Y(v)); c.lineTo(W - R, Y(v)); c.stroke(); c.setLineDash([]);
+    });
+
+    var bw = Math.max(step * 0.62, 1.6);
+    rows.forEach(function(r, i){
+      c.globalAlpha = r.缺 ? 0.28 : 1;           // 殘值的格子畫淡，不要跟正常的混在一起
+      c.fillStyle = r.s >= 0 ? 色('--call') : 色('--put');
+      var y0 = Y(0), y1 = Y(r.s);
+      c.fillRect(X(i) - bw / 2, Math.min(y0, y1), bw, Math.max(Math.abs(y1 - y0), 1));
+    });
+    c.globalAlpha = 1;
+
+    c.strokeStyle = 色('--ink'); c.lineWidth = 1.2;
+    c.beginPath(); c.moveTo(L, Y(0)); c.lineTo(W - R, Y(0)); c.stroke();
+
+    c.strokeStyle = '#d8a13a'; c.lineWidth = 2; c.lineJoin = 'round'; c.beginPath();
+    rows.forEach(function(r, i){ i ? c.lineTo(X(i), Y(r.y)) : c.moveTo(X(i), Y(r.y)); });
+    c.stroke();
+
+    /* 藍線＝主力錢投票，−1~+1 的連續值，走右軸。
+       兩個軸的 0 刻意對齊：這樣「家數在零軸下、錢在零軸上」一眼就分得出來，
+       那正是這條線唯一比紅綠棒多講的東西。 */
+    var Y0 = Y(0);
+    var YB = function(v){
+      var u = Math.max(-1, Math.min(1, v));
+      return u >= 0 ? Y0 - (Y0 - T) * u : Y0 + (T + ph - Y0) * (-u);
+    };
+    c.strokeStyle = '#4a8fe0'; c.lineWidth = 2.4; c.lineJoin = 'round'; c.beginPath();
+    var 斷 = true;
+    rows.forEach(function(r, i){
+      if(r.b === null){ 斷 = true; return; }       // 收盤那格沒有 bmv，斷開別接成假的直線
+      var yy = YB(r.b);
+      斷 ? c.moveTo(X(i), yy) : c.lineTo(X(i), yy);
+      斷 = false;
+    });
+    c.stroke();
+
+    c.fillStyle = 色('--muted'); c.font = '10px -apple-system'; c.textAlign = 'right';
+    [mx, 0, mn].forEach(function(v){ c.fillText(Math.round(v), L - 5, Y(v) + 3); });
+    /* 右軸只標 +1／0／−1 三格：卡片高度只有 152px，標多了反而看不清楚 */
+    c.fillStyle = '#4a8fe0'; c.textAlign = 'left';
+    [[1, '+1'], [0, '0'], [-1, '-1']].forEach(function(z){
+      c.fillText(z[1], W - R + 3, YB(z[0]) + 3);
+    });
+    c.fillStyle = 色('--muted'); c.textAlign = 'center';
+    for(var m = 540, i = 0; m <= 805; m += 5, i++){
+      if(i % 6) continue;
+      var lab = ('0' + Math.floor(m / 60)).slice(-2) + ':' + ('0' + (m % 60)).slice(-2);
+      c.fillText(lab, L + step * (i + 0.5), H - 5);
+    }
+  }
+
+  function 台北日(){
+    var t = new Date(Date.now() + (new Date().getTimezoneOffset() * 60000) + 8 * 3600000);
+    return '' + t.getFullYear() + ('0' + (t.getMonth() + 1)).slice(-2) + ('0' + t.getDate()).slice(-2);
+  }
+
+  function 渲染(day){
+    rows = 算三線((day && day.rows) || []);
+    if(!rows.length) return;                    // 開盤前／連假：整張卡不出現
+    算涵蓋(rows, day || {});
+    box.hidden = false;
+
+    var 末 = rows[rows.length - 1];
+    /* 收盤 13:30 那一格沒有成交額增量、bmv 是 null，KPI 要往回找最後一個有值的，
+       否則收盤後整晚看到的都是「主力錢 —」。 */
+    var 末錢 = null;
+    for(var k = rows.length - 1; k >= 0; k--){ if(rows[k].b !== null){ 末錢 = rows[k].b; break; } }
+    box.className = 'dk ' + (末.s >= 0 ? 'up' : 'down');
+    document.getElementById('dkq').textContent = 簽(末.s);
+
+    var d = day.date || '';
+    var 當天 = (d === 台北日());
+    document.getElementById('dkd').textContent =
+      d.slice(4, 6) + '/' + d.slice(6) + ' ' + (末.t || '') +
+      (day.updated ? '（更新 ' + day.updated + '）' : '') +
+      (當天 ? '' : '　最近交易日');
+
+    var hi = 0, lo = 0, 紅 = 0, 綠 = 0;
+    rows.forEach(function(r, i){
+      if(r.s > rows[hi].s) hi = i;
+      if(r.s < rows[lo].s) lo = i;
+      if(r.s > 0) 紅++; else if(r.s < 0) 綠++;
+    });
+    var 缺數 = 0;
+    rows.forEach(function(r){ if(r.缺) 缺數++; });
+    var 警 = 缺數 > rows.length * 0.2
+      ? '<b style="color:#d1544f">⚠ ' + 缺數 + '/' + rows.length +
+        ' 格沒掃完整，家數偏小、線失真，別照這張判讀</b>　' : '';
+    document.getElementById('dkfact').innerHTML = 警 +
+      '日內最強 <b>' + rows[hi].t + ' ' + 簽(rows[hi].s) + '</b>　最弱 <b>' + rows[lo].t + ' ' +
+      簽(rows[lo].s) + '</b>　紅棒 <b>' + 紅 + '</b> 根／綠棒 <b>' + 綠 + '</b> 根　掃描池 ' +
+      (day.pool || '?') + ' 檔' +
+      (末.cov !== null && 末.cov !== undefined
+        ? '　本格涵蓋 <b>' + Math.round(末.cov * 100) + '%</b>' : '');
+
+    function 格(k, v, cls){
+      return '<div class="dks"><span class="l">' + k + '</span><b class="' + (cls || '') +
+             '">' + v + '</b></div>';
+    }
+    document.getElementById('dkkpi').innerHTML =
+      格('多空空間', 簽(末.s), 末.s >= 0 ? 'up' : 'down') +
+      格('上漲 / 下跌', 末.up + ' / ' + 末.dn, 'dim') +
+      格('快動能', 簽(末.y), 末.y >= 0 ? 'up' : 'down') +
+      格('主力錢', 錢簽(末錢), (末錢 || 0) >= 0 ? 'up' : 'down') +
+      格('這 5 分成交', (末.amt || 0).toLocaleString('en-US') + ' 億', 'dim');
+
+    畫();
+  }
+
+  /* 點圖看某一根的數字。手機上沒有 hover，點擊是唯一能讀出單根數值的方式。 */
+  cv.addEventListener('click', function(e){
+    if(!布局 || !rows.length) return;
+    var r = cv.getBoundingClientRect();
+    var i = Math.round((e.clientX - r.left - 布局.L) / 布局.step - 0.5);
+    var row = rows[i];
+    if(!row) return;
+    document.getElementById('dkfact').innerHTML =
+      '<b>' + row.t + '</b>　多空空間 <b>' + 簽(row.s) + '</b>（漲 ' + row.up + ' / 跌 ' + row.dn +
+      '）　快動能 <b>' + 簽(row.y) + '</b>　主力錢 <b>' + 錢簽(row.b) + '</b>　這 5 分 ' +
+      (row.amt || 0).toLocaleString('en-US') + ' 億' +
+      (row.cov !== null && row.cov !== undefined
+        ? '　涵蓋 ' + Math.round(row.cov * 100) + '%' + (row.缺 ? '（這格不可信）' : '') : '');
+  });
+
+  function 載入(){
+    fetch(API, { cache: 'no-store' })
+      .then(function(r){ return r.json(); })
+      .then(渲染)
+      .catch(function(){});                     // 讀不到就維持隱藏，不影響選擇權主表
+  }
+
+  載入();
+  /* 本頁 60 秒會整頁重整，但使用者常常把頁面切到背景，重整不一定準時發生；
+     卡片自己也每 60 秒重抓一次，圖才會真的自己往前長。 */
+  setInterval(載入, 60000);
+  window.addEventListener('resize', 畫);
+})();
+</script>
