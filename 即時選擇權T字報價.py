@@ -213,9 +213,31 @@ def collect_groups(quote_list, night=False):
     return dict(groups)
 
 
-def picks_by_weekday(groups, weekday):
+def series_kind(grp):
+    """這組合約屬於哪條時間線：'wed'（W 系列週選＋月選）或 'fri'（F 系列週選）。
+
+    以前直接看到期日是星期幾，遇到假日順延就整組消失：
+    2026-09-25（五）中秋、09-28（一）教師節，F4 順延到 09/29（二），
+    既不是星期三也不是星期五，週五分頁就跳去顯示下週冷清的 F1。
+    改看 MIS 名稱裡的系列代號（'臺指選F4 (2026/09/29)' → F4），順延不影響歸屬；
+    名稱解析不出來才退回用到期星期判斷。
     """
-    挑出到期日落在指定星期的到期別，依到期日由近到遠排成 list。
+    name = grp.get("name") or ""
+    if name.startswith("F"):
+        return "fri"
+    if name.startswith("W") or name.endswith("月選"):
+        return "wed"
+    return {2: "wed", 4: "fri"}.get(expiry_weekday(grp.get("exp", "")))
+
+
+def is_shifted(exp, kind):
+    """到期日不在該系列的正常星期（假日順延）。"""
+    return expiry_weekday(exp) != {"wed": 2, "fri": 4}.get(kind, -1)
+
+
+def picks_by_kind(groups, kind):
+    """
+    挑出屬於指定時間線（'wed'／'fri'，見 series_kind）的到期別，依到期日由近到遠排成 list。
     以前只回「量最大」那一個，加了下週三分頁後不能再這樣挑：週三到期的除了
     最近的週選，還有月選與更遠的月份，量最大不等於第二近（例 08/26 W4 之後
     下一個週三是 09/02 W1 才 597 口，但 09/16 月選有 2694 口）。
@@ -226,7 +248,7 @@ def picks_by_weekday(groups, weekday):
     for g, v in groups.items():
         exp = v["exp"]
         # 已結算的合約 MIS 照理不會再回，但真的回了會讓「最近」那頁停在死合約
-        if expiry_weekday(exp) != weekday or v["vol"] <= 0 or exp < today:
+        if series_kind(v) != kind or v["vol"] <= 0 or exp < today:
             continue
         cur = by_exp.get(exp)
         if cur is None or v["vol"] > cur[1]["vol"]:
@@ -234,9 +256,9 @@ def picks_by_weekday(groups, weekday):
     return [by_exp[e] for e in sorted(by_exp)]
 
 
-def pick_nth(groups, weekday, nth):
-    """該星期到期的第 nth 近（0 = 最近）到期別；沒有就回 None。"""
-    lst = picks_by_weekday(groups, weekday)
+def pick_nth(groups, kind, nth):
+    """該時間線的第 nth 近（0 = 最近）到期別；沒有就回 None。"""
+    lst = picks_by_kind(groups, kind)
     return lst[nth] if len(lst) > nth else None
 
 
@@ -744,10 +766,10 @@ def build_report(gkey, grp, session, under, usrc, tab_id, tab_name, radius=1500)
     }
 
 
-# 分頁定義：(分頁 id, 到期日星期, 第幾近的到期日, 分頁標題)。
+# 分頁定義：(分頁 id, 時間線 wed/fri（見 series_kind）, 第幾近的到期日, 分頁標題)。
 # 月選也是星期三到期，排在週三那條時間線上（第三個星期三那週就是月選當家）。
 # 排列照結算先後：本週三 → 週五 → 下週三 → 月選。
-TABS = [("wed", 2, 0, "週三結算"), ("fri", 4, 0, "週五結算"), ("wed2", 2, 1, "下週三結算")]
+TABS = [("wed", "wed", 0, "週三結算"), ("fri", "fri", 0, "週五結算"), ("wed2", "wed", 1, "下週三結算")]
 
 # 月選分頁另外挑（見 pick_monthly）：它不是「第 N 近的星期三」，
 # 而是「最近一個還沒被上面三頁佔掉的月選」，排在最後一個。
@@ -761,8 +783,8 @@ def build_page(radius=1500):
     ql = fetch_mis_options(mkt)
     groups = collect_groups(ql, night=(mkt == "1"))
 
-    picks = [(tid, name) + (pick_nth(groups, wd, nth) or (None, None))
-             for tid, wd, nth, name in TABS]
+    picks = [(tid, name) + (pick_nth(groups, kind, nth) or (None, None))
+             for tid, kind, nth, name in TABS]
     picks = [(tid, name, g, v) for tid, name, g, v in picks if g]
     if not picks:
         raise ValueError("MIS 未回傳週三／週五到期的選擇權報價")
@@ -1145,6 +1167,8 @@ def render_panel(rep):
 
     e = rep["expiry"]
     exp_txt = f'{e[4:6]}/{e[6:8]} 到期（{rep["series"]}）'
+    if is_shifted(e, {"fri": "fri"}.get(rep["id"], "wed")):
+        exp_txt += f'　·　假日順延至週{"一二三四五六日"[expiry_weekday(e)]}'
     live = rep["session"] != "非交易" and not rep["stale"]
     time_txt = f'行情時間 {rep["time"]}' if live else f'最後成交 {rep["time"]}'
     if rep["stale"]:
@@ -1452,7 +1476,7 @@ def render_html(page):
     for r in reps:
         e = r["expiry"]
         tabs.append(f'<button class="tab" data-tab="{r["id"]}">{r["tab"]}'
-                    f'<small>{e[4:6]}/{e[6:8]} {r["series"]}</small></button>')
+                    f'<small>{e[4:6]}/{e[6:8]}{"(順延)" if is_shifted(e, {"fri": "fri"}.get(r["id"], "wed")) else ""} {r["series"]}</small></button>')
     tabs_html   = "\n  ".join(tabs)
     panels_html = "\n".join(render_panel(r) for r in reps)
 
