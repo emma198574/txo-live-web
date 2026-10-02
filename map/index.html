@@ -1,0 +1,259 @@
+<meta charset="utf-8">
+<title>台指攻防地圖</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&amp;family=Noto+Sans+TC:wght@400;500;700&amp;family=Noto+Serif+TC:wght@600;700&amp;display=swap">
+<style>
+:root{
+  --ground:#F1F2EF; --surface:#FBFBF9; --surface-2:#EDEEEA; --line:#D9DBD4; --line-soft:#E4E6E0;
+  --ink:#161A1B; --ink-2:#40484A; --ink-3:#6E7674;
+  --call:#C0392F; --put:#0E8A5F; --mark:#2E3A3C; --amber:#9A6B10; --amber-soft:#F0E4CB;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --ground:#101312; --surface:#181C1B; --surface-2:#202523; --line:#2C3331; --line-soft:#242A28;
+    --ink:#E8EAE6; --ink-2:#AEB6B3; --ink-3:#7E8785;
+    --call:#E4685E; --put:#2FA87E; --mark:#C3CCC9; --amber:#D2A03F; --amber-soft:#33290F;
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#101312; --surface:#181C1B; --surface-2:#202523; --line:#2C3331; --line-soft:#242A28;
+  --ink:#E8EAE6; --ink-2:#AEB6B3; --ink-3:#7E8785;
+  --call:#E4685E; --put:#2FA87E; --mark:#C3CCC9; --amber:#D2A03F; --amber-soft:#33290F;
+}
+*{box-sizing:border-box}
+body{background:var(--ground); color:var(--ink); margin:0; font-size:15px; line-height:1.72;
+     font-family:"Noto Sans TC","PingFang TC","Hiragino Sans TC",system-ui,sans-serif;
+     -webkit-font-smoothing:antialiased}
+.wrap{max-width:860px; margin:0 auto; padding:34px 20px 76px}
+.mono{font-family:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace; font-variant-numeric:tabular-nums}
+h1,h2,h3{font-family:"Noto Serif TC",Georgia,"Songti TC",serif; text-wrap:balance; margin:0}
+header{border-bottom:1px solid var(--line); padding-bottom:22px}
+.eyebrow{font-size:11.5px; letter-spacing:.22em; color:var(--ink-3); margin-bottom:10px}
+h1{font-size:31px; font-weight:700; line-height:1.28; letter-spacing:-.01em}
+.dek{color:var(--ink-2); font-size:14.5px; margin-top:10px; max-width:60ch}
+.stamp{margin-top:14px; font-size:12px; color:var(--ink-3); display:flex; flex-wrap:wrap; gap:6px 16px}
+.kpis{display:grid; grid-template-columns:repeat(3,1fr); gap:1px; background:var(--line);
+      border:1px solid var(--line); margin:26px 0 8px}
+@media (max-width:560px){.kpis{grid-template-columns:repeat(2,1fr)}}
+.kpi{background:var(--surface); padding:13px 14px 15px}
+.kpi .lb{font-size:11px; color:var(--ink-3); letter-spacing:.05em}
+.kpi .vl{font-size:22px; font-weight:600; margin-top:3px; letter-spacing:-.01em}
+.kpi .sub{font-size:11.5px; color:var(--ink-3); margin-top:1px}
+.dn{color:var(--call)} .up{color:var(--put)}
+section{margin-top:44px}
+.sec-h{display:flex; align-items:baseline; gap:12px; border-bottom:1px solid var(--line);
+       padding-bottom:9px; margin-bottom:20px}
+.sec-h h2{font-size:19px; font-weight:600}
+.sec-h .n{font-size:11.5px; color:var(--ink-3); letter-spacing:.05em; margin-left:auto}
+p{margin:0 0 14px}
+.notes{display:grid; gap:14px}
+.note{background:var(--surface); border:1px solid var(--line); padding:16px 18px 15px}
+.note h3{font-size:15.5px; font-weight:600; margin-bottom:6px}
+.note p{font-size:14px; color:var(--ink-2); margin:0}
+.note .ev{margin-top:10px; padding-top:9px; border-top:1px dashed var(--line);
+          font-size:12px; color:var(--ink-3)}
+.pain{width:100%; height:auto; display:block; margin-top:8px}
+.pain .pp{fill:var(--put); opacity:.32}
+.pain .pc{fill:var(--call); opacity:.32}
+.pain .ptot{fill:none; stroke:var(--ink-2); stroke-width:1.6}
+.pain .pnear{fill:none; stroke:var(--amber); stroke-width:1.6; stroke-dasharray:5 4}
+.pain .pg{stroke:var(--line-soft); stroke-width:1}
+.pain .pa{stroke:var(--line); stroke-width:1}
+.pain .pt{fill:var(--ink-3); font-size:11px; font-family:"IBM Plex Mono",ui-monospace,monospace}
+.pain .pl{fill:var(--ink); font-size:11.5px; font-weight:500}
+.pain .pnow{stroke:var(--mark); stroke-width:1.2; stroke-dasharray:3 3}
+.pain .pmn{fill:var(--surface); stroke:var(--ink); stroke-width:1.6}
+.pain .ph{fill:transparent}
+.pain .ph:hover{fill:var(--ink); fill-opacity:.05}
+.lg i.dash{background:none; border-top:2px dashed var(--amber); height:0; vertical-align:middle}
+.pcells{display:grid; grid-template-columns:repeat(5,1fr); gap:1px; background:var(--line); border:1px solid var(--line); margin-top:12px}
+.pcell{background:var(--surface); padding:8px 10px; text-align:center}
+.pcell.cur{background:var(--surface-2)}
+.pcell .lb{font-size:11.5px; color:var(--ink-3)}
+.pcell .vl{font-size:15px; font-weight:600}
+.pcell .sub{font-size:11.5px; color:var(--ink-3)}
+@media (max-width:560px){.pcells{grid-template-columns:repeat(3,1fr)}}
+.brks{display:grid; gap:14px}
+.brk{background:var(--surface); border:1px solid var(--line); padding:14px 14px 12px}
+.brk h3{font-size:15px; font-weight:600; margin-bottom:10px}
+.brk .sub{display:block; font-size:11px; color:var(--ink-3); font-weight:400}
+.brk h3 .sub{display:inline; margin-left:6px}
+.btb{width:100%; border-collapse:collapse; font-size:13px}
+.btb th{font-size:11.5px; font-weight:500; color:var(--ink-3); text-align:right; padding:4px 6px 6px; border-bottom:1px solid var(--line)}
+.btb td{text-align:right; padding:6px 6px; border-bottom:1px solid var(--line-soft); vertical-align:top}
+.btb th:first-child, .btb td:first-child{text-align:left}
+.btb .up{color:var(--call)} .btb .dn{color:var(--put)}
+.btag{display:inline-block; font-size:10.5px; padding:0 5px; margin:3px 4px 0 0; background:var(--amber-soft); color:var(--amber); border-radius:2px}
+.brk .lean{font-size:12.5px; color:var(--ink-2); margin:10px 0 4px}
+.brk .bnote{font-size:11.5px; color:var(--ink-3); margin:6px 0 0}
+@media (max-width:560px){.btb{font-size:12px} .btb th, .btb td{padding:5px 3px}}
+.ladder-box{background:var(--surface); border:1px solid var(--line); padding:18px 14px 14px; overflow-x:auto}
+.lg{display:flex; gap:20px; flex-wrap:wrap; font-size:11.5px; color:var(--ink-3); margin-bottom:14px; padding:0 6px}
+.lg i{display:inline-block; width:22px; height:8px; vertical-align:-1px; margin-right:6px}
+.ladder{min-width:520px; display:grid; grid-template-columns:1fr 118px 1fr; row-gap:2px; align-items:center}
+.bar-l,.bar-r{display:flex; align-items:center; gap:7px; height:15px}
+.bar-l{justify-content:flex-end}
+.bar-r{justify-content:flex-start}
+.b{height:11px; background:var(--call)}
+.bar-r .b{background:var(--put)}
+.bn{font-size:11px; color:var(--ink-3)}
+.k{text-align:center; font-size:12.5px; font-weight:500; color:var(--ink-2)}
+.k b{color:var(--ink); font-weight:600}
+.k .fx{display:block; font-size:10.5px; color:var(--ink-3); font-weight:400; margin-top:-3px}
+.row{display:contents}
+.mk{grid-column:1/-1; display:flex; align-items:center; gap:9px; margin:4px 0; font-size:11.5px; color:var(--mark)}
+.mk::before,.mk::after{content:""; flex:1; height:1px; background:var(--line)}
+.mk span{white-space:nowrap}
+.mk.now{color:var(--amber); font-weight:500}
+.mk.now::before,.mk.now::after{background:var(--amber); opacity:.45}
+.zone{grid-column:1/-1; background:var(--amber-soft); border-left:2px solid var(--amber);
+      padding:9px 12px; margin:6px 0; font-size:12.5px; color:var(--ink-2)}
+.zone b{color:var(--ink); font-weight:600}
+.basis{display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-top:16px; padding:12px 14px;
+       background:var(--surface-2); border:1px solid var(--line-soft); font-size:12.5px; color:var(--ink-2)}
+.basis input[type=range]{flex:1; min-width:150px; accent-color:var(--mark)}
+.basis output{font-weight:600; color:var(--ink); min-width:52px}
+.plays{display:grid; gap:16px}
+.play{background:var(--surface); border:1px solid var(--line); border-top:3px solid var(--mark); padding:17px 18px 16px}
+.play.bear{border-top-color:var(--call)}
+.play.bull{border-top-color:var(--put)}
+.play-h{display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; margin-bottom:4px}
+.play-h h3{font-size:16.5px; font-weight:600}
+.tag{font-size:10.5px; letter-spacing:.1em; padding:2px 7px; border:1px solid var(--line); color:var(--ink-3)}
+.play > p{font-size:14px; color:var(--ink-2); margin:6px 0 13px}
+.rows{display:grid; grid-template-columns:auto 1fr; gap:7px 14px; font-size:13.5px; align-items:baseline}
+.rows dt{font-size:11px; letter-spacing:.09em; color:var(--ink-3); padding-top:2px; white-space:nowrap}
+.rows dd{margin:0; color:var(--ink-2)}
+.rows dd .mono{color:var(--ink); font-weight:500}
+.evid{display:grid; grid-template-columns:repeat(3,1fr); gap:14px}
+@media (max-width:700px){.evid{grid-template-columns:1fr}}
+.ev-c{background:var(--surface); border:1px solid var(--line); padding:15px 16px}
+.ev-c h3{font-size:13px; font-weight:600; letter-spacing:.04em; margin-bottom:9px;
+         padding-bottom:7px; border-bottom:1px solid var(--line-soft)}
+.ev-c.untested h3{color:var(--amber)}
+.ev-c.dead h3{color:var(--ink-3)}
+.ev-c ul{margin:0; padding-left:16px; font-size:12.5px; color:var(--ink-2); line-height:1.62}
+.ev-c li{margin-bottom:6px}
+.ev-c.dead ul{color:var(--ink-3)}
+.warn{margin-top:26px; background:var(--amber-soft); border:1px solid var(--amber); padding:16px 18px}
+.warn h3{font-size:14.5px; font-weight:600; margin-bottom:8px; color:var(--ink)}
+.warn ul{margin:0; padding-left:17px; font-size:13px; color:var(--ink-2)}
+.warn li{margin-bottom:5px}
+footer{margin-top:40px; padding-top:16px; border-top:1px solid var(--line); font-size:11.5px; color:var(--ink-3)}
+@media (prefers-reduced-motion:reduce){*{animation:none!important; transition:none!important}}
+</style>
+<div class="wrap">
+<header>
+  <div class="eyebrow">2026 / 10 / 02 收盤　→　下一個交易日日盤</div>
+  <h1>台指攻防地圖</h1>
+  <p class="dek">今日收盤 OI ＋ 夜盤即時 ＋ 今日波段黃金切割，統一換到<strong>期指口徑</strong>比對。價位是硬的（OI 真的堆在那），方向是軟的。</p>
+  <div class="stamp mono"><span>OI：期交所 2026/10/02 收盤檔</span><span>夜盤：MIS 20:37</span><span>產出：2026/10/02 20:37</span></div>
+</header>
+
+<div class="kpis"><div class="kpi"><div class="lb">加權指數 收盤</div><div class="vl mono ">48,475.74</div><div class="sub mono up">+122.25　成交 9,382 億</div></div><div class="kpi"><div class="lb">台指期 10 收盤</div><div class="vl mono ">48,671</div><div class="sub mono dn">-14　量 34,014 口</div></div><div class="kpi"><div class="lb">夜盤現價 20:37</div><div class="vl mono ">49,120</div><div class="sub mono ">高 49,136 ／ 低 48,671</div></div><div class="kpi"><div class="lb">期現價差</div><div class="vl mono ">+195</div><div class="sub mono ">10/02 收盤　牆換到期指口徑用</div></div><div class="kpi"><div class="lb">10/07 Max Pain</div><div class="vl mono ">47,500</div><div class="sub mono ">期指 47,695（未檢定）</div></div><div class="kpi"><div class="lb">外資期貨未平倉</div><div class="vl mono dn">-80,304</div><div class="sub mono dn">今日淨空再增 750 口</div></div></div>
+
+<section>
+  <div class="sec-h"><h2>今天發生了什麼</h2><span class="n mono">事實層</span></div>
+  <!-- NARRATIVE:START -->
+  <div class="notes"><div class="note"><h3>今日日盤：收在全日中段</h3><p>開 48,552，開盤跳空 -133 點，高 48,802、低 48,472、收 48,671，量 34,014 口。收盤價落在當日區間的 60% 位置。</p><div class="ev mono">近月合約 202610　期現價差 +195 點（10/02 收盤）</div></div><div class="note"><h3>夜盤區間</h3><p>夜盤 開 48,671、高 49,136、低 48,671、現 49,120，量 13,139 口（日盤的 39%）。<strong>夜盤才開盤不久，這個區間還會再擴</strong>——完整的整夜高低要明早才有。</p><div class="ev mono">夜盤選擇權量 TXO C 1,036/P 1,785　TXV C 254/P 353</div></div><div class="note"><h3>10/07 這個到期別，61% 的 OI 是 10/02 當天現建的</h3><p>這種合約上的「當日 +N」沒有辨識力，<strong>只能看絕對厚度</strong>。真正的存量結構在 10/21。</p><div class="ev mono">10/07 C 17,885 P 12,784　｜　10/21 C 21,947 P 19,586</div></div><div class="note"><h3>外資 10/02 做了什麼</h3><p>台指期未平倉淨額 -80,304 口，當日交易淨額 -802 口。選擇權端買權未平倉淨額 -1,113 口、賣權 +581 口。這是部位事實，不是方向預測——賣買權也可能是持股的 covered call。</p><div class="ev mono">投信期貨淨額 +74,669 口（結構性，日日不動）　自營 -1,006 口</div></div></div>
+  <!-- NARRATIVE:END -->
+</section>
+
+<section>
+  <div class="sec-h"><h2>籌碼階梯</h2><span class="n mono">履約價 + 價差 → 期指口徑</span></div>
+  <div class="ladder-box">
+    <div class="lg"><span><i style="background:var(--call)"></i>買權 OI</span>
+      <span><i style="background:var(--put)"></i>賣權 OI</span>
+      <span>10/07 ＋ 10/21 到期別加總，2026/10/02 收盤</span></div>
+    <div class="ladder"><div class="row" title="履約 51,000　買權 903 口（10/07 67／10/21 836）　賣權 5 口（10/07 0／10/21 5）"><div class="bar-l"><span class="bn mono">903</span><span class="b" style="width:42.92%"></span></div><div class="k mono"><b>51,000</b><span class="fx" data-k="51000">期指 51,195</span></div><div class="bar-r"><span class="b" style="width:0.24%"></span><span class="bn mono">5</span></div></div><div class="row" title="履約 50,800　買權 445 口（10/07 77／10/21 368）　賣權 7 口（10/07 0／10/21 7）"><div class="bar-l"><span class="bn mono">445</span><span class="b" style="width:21.15%"></span></div><div class="k mono"><b>50,800</b><span class="fx" data-k="50800">期指 50,995</span></div><div class="bar-r"><span class="b" style="width:0.33%"></span><span class="bn mono">7</span></div></div><div class="mk"><span>黃金延伸 161.8% 50,966</span></div><div class="row" title="履約 50,700　買權 889 口（10/07 839／10/21 50）　賣權 1 口（10/07 0／10/21 1）"><div class="bar-l"><span class="bn mono">889</span><span class="b" style="width:42.25%"></span></div><div class="k mono"><b>50,700</b><span class="fx" data-k="50700">期指 50,895</span></div><div class="bar-r"><span class="b" style="width:0.05%"></span><span class="bn mono">1</span></div></div><div class="row" title="履約 50,500　買權 603 口（10/07 298／10/21 305）　賣權 0 口（10/07 0／10/21 0）"><div class="bar-l"><span class="bn mono">603</span><span class="b" style="width:28.66%"></span></div><div class="k mono"><b>50,500</b><span class="fx" data-k="50500">期指 50,695</span></div><div class="bar-r"><span class="b" style="width:0.00%"></span><span class="bn mono">0</span></div></div><div class="row" title="履約 50,400　買權 449 口（10/07 388／10/21 61）　賣權 6 口（10/07 1／10/21 5）"><div class="bar-l"><span class="bn mono">449</span><span class="b" style="width:21.34%"></span></div><div class="k mono"><b>50,400</b><span class="fx" data-k="50400">期指 50,595</span></div><div class="bar-r"><span class="b" style="width:0.29%"></span><span class="bn mono">6</span></div></div><div class="row" title="履約 50,200　買權 252 口（10/07 141／10/21 111）　賣權 2 口（10/07 0／10/21 2）"><div class="bar-l"><span class="bn mono">252</span><span class="b" style="width:11.98%"></span></div><div class="k mono"><b>50,200</b><span class="fx" data-k="50200">期指 50,395</span></div><div class="bar-r"><span class="b" style="width:0.10%"></span><span class="bn mono">2</span></div></div><div class="row" title="履約 50,000　買權 2,104 口（10/07 830／10/21 1,274）　賣權 33 口（10/07 3／10/21 30）"><div class="bar-l"><span class="bn mono">2,104</span><span class="b" style="width:100.00%"></span></div><div class="k mono"><b>50,000</b><span class="fx" data-k="50000">期指 50,195</span></div><div class="bar-r"><span class="b" style="width:1.57%"></span><span class="bn mono">33</span></div></div><div class="zone"><b>共振・厚牆</b><br><span class="mono">黃金延伸 138.2% <b>50,194</b> × 50,000 買權牆 <b>50,195</b>（2,104 口）　相差 1 點</span></div><div class="row" title="履約 49,900　買權 444 口（10/07 366／10/21 78）　賣權 3 口（10/07 0／10/21 3）"><div class="bar-l"><span class="bn mono">444</span><span class="b" style="width:21.10%"></span></div><div class="k mono"><b>49,900</b><span class="fx" data-k="49900">期指 50,095</span></div><div class="bar-r"><span class="b" style="width:0.14%"></span><span class="bn mono">3</span></div></div><div class="row" title="履約 49,800　買權 667 口（10/07 556／10/21 111）　賣權 4 口（10/07 0／10/21 4）"><div class="bar-l"><span class="bn mono">667</span><span class="b" style="width:31.70%"></span></div><div class="k mono"><b>49,800</b><span class="fx" data-k="49800">期指 49,995</span></div><div class="bar-r"><span class="b" style="width:0.19%"></span><span class="bn mono">4</span></div></div><div class="row" title="履約 49,700　買權 423 口（10/07 332／10/21 91）　賣權 1 口（10/07 0／10/21 1）"><div class="bar-l"><span class="bn mono">423</span><span class="b" style="width:20.10%"></span></div><div class="k mono"><b>49,700</b><span class="fx" data-k="49700">期指 49,895</span></div><div class="bar-r"><span class="b" style="width:0.05%"></span><span class="bn mono">1</span></div></div><div class="mk"><span>黃金延伸 127.2% 49,835</span></div><div class="row" title="履約 49,600　買權 346 口（10/07 232／10/21 114）　賣權 4 口（10/07 2／10/21 2）"><div class="bar-l"><span class="bn mono">346</span><span class="b" style="width:16.44%"></span></div><div class="k mono"><b>49,600</b><span class="fx" data-k="49600">期指 49,795</span></div><div class="bar-r"><span class="b" style="width:0.19%"></span><span class="bn mono">4</span></div></div><div class="row" title="履約 49,500　買權 1,118 口（10/07 458／10/21 660）　賣權 9 口（10/07 5／10/21 4）"><div class="bar-l"><span class="bn mono">1,118</span><span class="b" style="width:53.14%"></span></div><div class="k mono"><b>49,500</b><span class="fx" data-k="49500">期指 49,695</span></div><div class="bar-r"><span class="b" style="width:0.43%"></span><span class="bn mono">9</span></div></div><div class="row" title="履約 49,400　買權 302 口（10/07 215／10/21 87）　賣權 3 口（10/07 0／10/21 3）"><div class="bar-l"><span class="bn mono">302</span><span class="b" style="width:14.35%"></span></div><div class="k mono"><b>49,400</b><span class="fx" data-k="49400">期指 49,595</span></div><div class="bar-r"><span class="b" style="width:0.14%"></span><span class="bn mono">3</span></div></div><div class="row" title="履約 49,300　買權 351 口（10/07 247／10/21 104）　賣權 5 口（10/07 3／10/21 2）"><div class="bar-l"><span class="bn mono">351</span><span class="b" style="width:16.68%"></span></div><div class="k mono"><b>49,300</b><span class="fx" data-k="49300">期指 49,495</span></div><div class="bar-r"><span class="b" style="width:0.24%"></span><span class="bn mono">5</span></div></div><div class="row" title="履約 49,200　買權 668 口（10/07 439／10/21 229）　賣權 15 口（10/07 6／10/21 9）"><div class="bar-l"><span class="bn mono">668</span><span class="b" style="width:31.75%"></span></div><div class="k mono"><b>49,200</b><span class="fx" data-k="49200">期指 49,395</span></div><div class="bar-r"><span class="b" style="width:0.71%"></span><span class="bn mono">15</span></div></div><div class="row" title="履約 49,100　買權 1,007 口（10/07 211／10/21 796）　賣權 7 口（10/07 3／10/21 4）"><div class="bar-l"><span class="bn mono">1,007</span><span class="b" style="width:47.86%"></span></div><div class="k mono"><b>49,100</b><span class="fx" data-k="49100">期指 49,295</span></div><div class="bar-r"><span class="b" style="width:0.33%"></span><span class="bn mono">7</span></div></div><div class="row" title="履約 49,000　買權 1,555 口（10/07 842／10/21 713）　賣權 97 口（10/07 17／10/21 80）"><div class="bar-l"><span class="bn mono">1,555</span><span class="b" style="width:73.91%"></span></div><div class="k mono"><b>49,000</b><span class="fx" data-k="49000">期指 49,195</span></div><div class="bar-r"><span class="b" style="width:4.61%"></span><span class="bn mono">97</span></div></div><div class="mk now"><span>夜盤高 49,136　｜　▸ 夜盤現價 49,120</span></div><div class="row" title="履約 48,900　買權 327 口（10/07 207／10/21 120）　賣權 17 口（10/07 9／10/21 8）"><div class="bar-l"><span class="bn mono">327</span><span class="b" style="width:15.54%"></span></div><div class="k mono"><b>48,900</b><span class="fx" data-k="48900">期指 49,095</span></div><div class="bar-r"><span class="b" style="width:0.81%"></span><span class="bn mono">17</span></div></div><div class="row" title="履約 48,800　買權 467 口（10/07 329／10/21 138）　賣權 24 口（10/07 8／10/21 16）"><div class="bar-l"><span class="bn mono">467</span><span class="b" style="width:22.20%"></span></div><div class="k mono"><b>48,800</b><span class="fx" data-k="48800">期指 48,995</span></div><div class="bar-r"><span class="b" style="width:1.14%"></span><span class="bn mono">24</span></div></div><div class="row" title="履約 48,700　買權 518 口（10/07 265／10/21 253）　賣權 54 口（10/07 25／10/21 29）"><div class="bar-l"><span class="bn mono">518</span><span class="b" style="width:24.62%"></span></div><div class="k mono"><b>48,700</b><span class="fx" data-k="48700">期指 48,895</span></div><div class="bar-r"><span class="b" style="width:2.57%"></span><span class="bn mono">54</span></div></div><div class="mk"><span>今日日盤高 48,802</span></div><div class="row" title="履約 48,600　買權 655 口（10/07 347／10/21 308）　賣權 199 口（10/07 101／10/21 98）"><div class="bar-l"><span class="bn mono">655</span><span class="b" style="width:31.13%"></span></div><div class="k mono"><b>48,600</b><span class="fx" data-k="48600">期指 48,795</span></div><div class="bar-r"><span class="b" style="width:9.46%"></span><span class="bn mono">199</span></div></div><div class="row" title="履約 48,500　買權 1,026 口（10/07 676／10/21 350）　賣權 333 口（10/07 146／10/21 187）"><div class="bar-l"><span class="bn mono">1,026</span><span class="b" style="width:48.76%"></span></div><div class="k mono"><b>48,500</b><span class="fx" data-k="48500">期指 48,695</span></div><div class="bar-r"><span class="b" style="width:15.83%"></span><span class="bn mono">333</span></div></div><div class="mk"><span>跳空缺口上緣（昨收）48,685　｜　今日日盤收 48,671　｜　夜盤低 48,671</span></div><div class="row" title="履約 48,400　買權 739 口（10/07 522／10/21 217）　賣權 210 口（10/07 133／10/21 77）"><div class="bar-l"><span class="bn mono">739</span><span class="b" style="width:35.12%"></span></div><div class="k mono"><b>48,400</b><span class="fx" data-k="48400">期指 48,595</span></div><div class="bar-r"><span class="b" style="width:9.98%"></span><span class="bn mono">210</span></div></div><div class="mk"><span>跳空缺口下緣（今日開盤）48,552</span></div><div class="row" title="履約 48,300　買權 348 口（10/07 125／10/21 223）　賣權 322 口（10/07 220／10/21 102）"><div class="bar-l"><span class="bn mono">348</span><span class="b" style="width:16.54%"></span></div><div class="k mono"><b>48,300</b><span class="fx" data-k="48300">期指 48,495</span></div><div class="bar-r"><span class="b" style="width:15.30%"></span><span class="bn mono">322</span></div></div><div class="mk"><span>今日日盤低 48,472</span></div><div class="row" title="履約 48,200　買權 347 口（10/07 130／10/21 217）　賣權 249 口（10/07 135／10/21 114）"><div class="bar-l"><span class="bn mono">347</span><span class="b" style="width:16.49%"></span></div><div class="k mono"><b>48,200</b><span class="fx" data-k="48200">期指 48,395</span></div><div class="bar-r"><span class="b" style="width:11.83%"></span><span class="bn mono">249</span></div></div><div class="row" title="履約 48,100　買權 255 口（10/07 83／10/21 172）　賣權 219 口（10/07 139／10/21 80）"><div class="bar-l"><span class="bn mono">255</span><span class="b" style="width:12.12%"></span></div><div class="k mono"><b>48,100</b><span class="fx" data-k="48100">期指 48,295</span></div><div class="bar-r"><span class="b" style="width:10.41%"></span><span class="bn mono">219</span></div></div><div class="row" title="履約 48,000　買權 973 口（10/07 141／10/21 832）　賣權 1,414 口（10/07 766／10/21 648）"><div class="bar-l"><span class="bn mono">973</span><span class="b" style="width:46.25%"></span></div><div class="k mono"><b>48,000</b><span class="fx" data-k="48000">期指 48,195</span></div><div class="bar-r"><span class="b" style="width:67.21%"></span><span class="bn mono">1,414</span></div></div><div class="zone"><b>共振・厚牆</b><br><span class="mono">黃金切割 23.6% <b>48,175</b> × 48,000 賣權牆 <b>48,195</b>（1,414 口）　相差 20 點</span></div><div class="row" title="履約 47,800　買權 163 口（10/07 72／10/21 91）　賣權 500 口（10/07 406／10/21 94）"><div class="bar-l"><span class="bn mono">163</span><span class="b" style="width:7.75%"></span></div><div class="k mono"><b>47,800</b><span class="fx" data-k="47800">期指 47,995</span></div><div class="bar-r"><span class="b" style="width:23.76%"></span><span class="bn mono">500</span></div></div><div class="row" title="履約 47,600　買權 51 口（10/07 3／10/21 48）　賣權 291 口（10/07 219／10/21 72）"><div class="bar-l"><span class="bn mono">51</span><span class="b" style="width:2.42%"></span></div><div class="k mono"><b>47,600</b><span class="fx" data-k="47600">期指 47,795</span></div><div class="bar-r"><span class="b" style="width:13.83%"></span><span class="bn mono">291</span></div></div><div class="zone"><b>共振・厚牆</b><br><span class="mono">黃金切割 38.2% <b>47,698</b> × 47,500 賣權牆 <b>47,695</b>（1,101 口）　相差 3 點</span></div><div class="row" title="履約 47,500　買權 832 口（10/07 640／10/21 192）　賣權 1,101 口（10/07 619／10/21 482）"><div class="bar-l"><span class="bn mono">832</span><span class="b" style="width:39.54%"></span></div><div class="k mono"><b>47,500</b><span class="fx" data-k="47500">期指 47,695</span></div><div class="bar-r"><span class="b" style="width:52.33%"></span><span class="bn mono">1,101</span></div></div><div class="mk"><span>10/07 Max Pain 47,695</span></div><div class="row" title="履約 47,300　買權 65 口（10/07 0／10/21 65）　賣權 374 口（10/07 286／10/21 88）"><div class="bar-l"><span class="bn mono">65</span><span class="b" style="width:3.09%"></span></div><div class="k mono"><b>47,300</b><span class="fx" data-k="47300">期指 47,495</span></div><div class="bar-r"><span class="b" style="width:17.78%"></span><span class="bn mono">374</span></div></div><div class="row" title="履約 47,200　買權 393 口（10/07 3／10/21 390）　賣權 490 口（10/07 404／10/21 86）"><div class="bar-l"><span class="bn mono">393</span><span class="b" style="width:18.68%"></span></div><div class="k mono"><b>47,200</b><span class="fx" data-k="47200">期指 47,395</span></div><div class="bar-r"><span class="b" style="width:23.29%"></span><span class="bn mono">490</span></div></div><div class="zone"><b>共振・厚牆</b><br><span class="mono">黃金切割 50.0% <b>47,312</b> × 47,100 買權牆 <b>47,295</b>（1,013 口）　相差 17 點</span></div><div class="row" title="履約 47,100　買權 1,013 口（10/07 631／10/21 382）　賣權 551 口（10/07 471／10/21 80）"><div class="bar-l"><span class="bn mono">1,013</span><span class="b" style="width:48.15%"></span></div><div class="k mono"><b>47,100</b><span class="fx" data-k="47100">期指 47,295</span></div><div class="bar-r"><span class="b" style="width:26.19%"></span><span class="bn mono">551</span></div></div><div class="mk"><span>合併 Max Pain 47,295</span></div><div class="row" title="履約 47,000　買權 899 口（10/07 6／10/21 893）　賣權 1,164 口（10/07 670／10/21 494）"><div class="bar-l"><span class="bn mono">899</span><span class="b" style="width:42.73%"></span></div><div class="k mono"><b>47,000</b><span class="fx" data-k="47000">期指 47,195</span></div><div class="bar-r"><span class="b" style="width:55.32%"></span><span class="bn mono">1,164</span></div></div><div class="row" title="履約 46,900　買權 329 口（10/07 219／10/21 110）　賣權 311 口（10/07 245／10/21 66）"><div class="bar-l"><span class="bn mono">329</span><span class="b" style="width:15.64%"></span></div><div class="k mono"><b>46,900</b><span class="fx" data-k="46900">期指 47,095</span></div><div class="bar-r"><span class="b" style="width:14.78%"></span><span class="bn mono">311</span></div></div><div class="row" title="履約 46,800　買權 567 口（10/07 450／10/21 117）　賣權 781 口（10/07 660／10/21 121）"><div class="bar-l"><span class="bn mono">567</span><span class="b" style="width:26.95%"></span></div><div class="k mono"><b>46,800</b><span class="fx" data-k="46800">期指 46,995</span></div><div class="bar-r"><span class="b" style="width:37.12%"></span><span class="bn mono">781</span></div></div><div class="zone"><b>共振・厚牆</b><br><span class="mono">黃金切割 61.8% <b>46,926</b> × 46,700 買權牆 <b>46,895</b>（1,043 口）　相差 31 點</span></div><div class="row" title="履約 46,700　買權 1,043 口（10/07 951／10/21 92）　賣權 526 口（10/07 453／10/21 73）"><div class="bar-l"><span class="bn mono">1,043</span><span class="b" style="width:49.57%"></span></div><div class="k mono"><b>46,700</b><span class="fx" data-k="46700">期指 46,895</span></div><div class="bar-r"><span class="b" style="width:25.00%"></span><span class="bn mono">526</span></div></div><div class="row" title="履約 46,600　買權 1,146 口（10/07 950／10/21 196）　賣權 440 口（10/07 323／10/21 117）"><div class="bar-l"><span class="bn mono">1,146</span><span class="b" style="width:54.47%"></span></div><div class="k mono"><b>46,600</b><span class="fx" data-k="46600">期指 46,795</span></div><div class="bar-r"><span class="b" style="width:20.91%"></span><span class="bn mono">440</span></div></div><div class="mk"><span>10/21 Max Pain 46,795</span></div><div class="row" title="履約 46,500　買權 410 口（10/07 298／10/21 112）　賣權 771 口（10/07 186／10/21 585）"><div class="bar-l"><span class="bn mono">410</span><span class="b" style="width:19.49%"></span></div><div class="k mono"><b>46,500</b><span class="fx" data-k="46500">期指 46,695</span></div><div class="bar-r"><span class="b" style="width:36.64%"></span><span class="bn mono">771</span></div></div></div>
+    <div class="basis">
+      <label for="bs">期現價差校準</label>
+      <input type="range" id="bs" min="-200" max="300" step="2" value="195">
+      <output id="bsv" class="mono">+195</output>
+      <span style="flex-basis:100%; font-size:11.5px; color:var(--ink-3)">
+        牆長在履約價上（結算對加權指數），你下單的是期指。今天收盤價差 +195 點；明早開盤要重新校準，
+        這是整張圖最大的誤差來源。</span>
+    </div>
+  </div>
+</section>
+
+
+<section>
+  <div class="sec-h"><h2>到期別拆解</h2><span class="n mono">新建 vs 存量・事實＋未檢定推論</span></div>
+  <p style="font-size:13px; color:var(--ink-3); margin:0 0 14px; max-width:64ch">
+    階梯把到期別合併成一根條，看不出哪些是今天才新建、哪些是放了好幾天的老部位。
+    這裡把最近到期別與最遠到期別分開。OI 與權利金是事實；「傾向誰在加」與損益兩平的意涵是推論。</p>
+  <div class="brks">
+  <div class="brk">
+    <h3>上方買權拆解　<span class="sub mono">現價上方 3% 內 OI 最厚的 7 檔</span></h3>
+    <table class="btb"><thead><tr><th>履約價</th><th>10/07 OI<span class="sub">今日增減</span></th>
+      <th>10/21 OI<span class="sub">今日增減</span></th>
+      <th>10/07 權利金<span class="sub">今日漲跌</span></th><th>損益兩平<span class="sub">期指</span></th></tr></thead>
+      <tbody><tr><td><b class="mono">49,000</b><span class="sub mono fx" data-k="49000">期指 49,195</span></td><td class="mono">842<span class="sub"><span class="up">+483</span></span></td><td class="mono">713<span class="sub"><span class="up">+77</span></span></td><td class="mono">127<span class="sub">-33%</span></td><td class="mono">49,322</td></tr><tr><td><b class="mono">49,100</b><span class="sub mono fx" data-k="49100">期指 49,295</span><span class="btag">老存量</span></td><td class="mono">211<span class="sub"><span class="up">+128</span></span></td><td class="mono">796<span class="sub"><span class="up">+1</span></span></td><td class="mono">103<span class="sub">-36%</span></td><td class="mono">49,398</td></tr><tr><td><b class="mono">49,200</b><span class="sub mono fx" data-k="49200">期指 49,395</span><span class="btag">今天新建</span></td><td class="mono">439<span class="sub"><span class="up">+275</span></span></td><td class="mono">229<span class="sub"><span class="up">+8</span></span></td><td class="mono">86<span class="sub">-37%</span></td><td class="mono">49,481</td></tr><tr><td><b class="mono">49,500</b><span class="sub mono fx" data-k="49500">期指 49,695</span><span class="btag">今天新建</span><span class="btag">老存量</span></td><td class="mono">458<span class="sub"><span class="up">+339</span></span></td><td class="mono">660<span class="sub"><span class="up">+16</span></span></td><td class="mono">47.5<span class="sub">-41%</span></td><td class="mono">49,742</td></tr><tr><td><b class="mono">49,800</b><span class="sub mono fx" data-k="49800">期指 49,995</span><span class="btag">今天新建</span><span class="btag">非整數關卡</span></td><td class="mono">556<span class="sub"><span class="up">+482</span></span></td><td class="mono">111<span class="sub"><span class="up">+2</span></span></td><td class="mono">24.5<span class="sub">-51%</span></td><td class="mono">50,020</td></tr><tr><td><b class="mono">49,900</b><span class="sub mono fx" data-k="49900">期指 50,095</span><span class="btag">今天新建</span></td><td class="mono">366<span class="sub"><span class="up">+332</span></span></td><td class="mono">78<span class="sub"><span class="up">+4</span></span></td><td class="mono">20<span class="sub">-50%</span></td><td class="mono">50,115</td></tr><tr><td><b class="mono">50,000</b><span class="sub mono fx" data-k="50000">期指 50,195</span><span class="btag">老存量</span></td><td class="mono">830<span class="sub"><span class="up">+400</span></span></td><td class="mono">1,274<span class="sub"><span class="up">+37</span></span></td><td class="mono">16<span class="sub">-56%</span></td><td class="mono">50,211</td></tr></tbody></table>
+    <p class="lean">10/07 這一段今天淨增 +2,439 口，權利金平均 -44%，但下方賣權也跌了 -23%——<b>兩邊一起跌，主因多半是時間價值流失與波動率下降</b>，「賣方在加」的推論很弱，只能看絕對厚度。</p>
+    <p class="bnote">損益兩平＝履約價 ＋ 10/07 結算價，換到期指口徑（+195）。到期前期指撐不上這個價，新建的那方如果是賣方就是贏家；反過來穿過去時賣方要停損或避險（買期貨），理論上會讓走勢加速——本專案未回測。</p>
+  </div>
+  <div class="brk">
+    <h3>下方賣權拆解　<span class="sub mono">現價下方 3% 內 OI 最厚的 5 檔</span></h3>
+    <table class="btb"><thead><tr><th>履約價</th><th>10/07 OI<span class="sub">今日增減</span></th>
+      <th>10/21 OI<span class="sub">今日增減</span></th>
+      <th>10/07 權利金<span class="sub">今日漲跌</span></th><th>損益兩平<span class="sub">期指</span></th></tr></thead>
+      <tbody><tr><td><b class="mono">48,500</b><span class="sub mono fx" data-k="48500">期指 48,695</span></td><td class="mono">146<span class="sub"><span class="up">+125</span></span></td><td class="mono">187<span class="sub"><span class="up">+16</span></span></td><td class="mono">418<span class="sub">-11%</span></td><td class="mono">48,277</td></tr><tr><td><b class="mono">48,300</b><span class="sub mono fx" data-k="48300">期指 48,495</span></td><td class="mono">220<span class="sub"><span class="up">+151</span></span></td><td class="mono">102<span class="sub"><span class="up">+19</span></span></td><td class="mono">316<span class="sub">-13%</span></td><td class="mono">48,179</td></tr><tr><td><b class="mono">48,000</b><span class="sub mono fx" data-k="48000">期指 48,195</span><span class="btag">今天新建</span></td><td class="mono">766<span class="sub"><span class="up">+679</span></span></td><td class="mono">648<span class="sub"><span class="up">+76</span></span></td><td class="mono">193<span class="sub">-19%</span></td><td class="mono">48,002</td></tr><tr><td><b class="mono">47,800</b><span class="sub mono fx" data-k="47800">期指 47,995</span><span class="btag">今天新建</span><span class="btag">非整數關卡</span></td><td class="mono">406<span class="sub"><span class="up">+325</span></span></td><td class="mono">94<span class="sub"><span class="up">+3</span></span></td><td class="mono">137<span class="sub">-22%</span></td><td class="mono">47,858</td></tr><tr><td><b class="mono">47,500</b><span class="sub mono fx" data-k="47500">期指 47,695</span><span class="btag">今天新建</span></td><td class="mono">619<span class="sub"><span class="up">+505</span></span></td><td class="mono">482<span class="sub"><span class="">+0</span></span></td><td class="mono">74<span class="sub">-33%</span></td><td class="mono">47,621</td></tr></tbody></table>
+    <p class="lean">10/07 這一段今天淨增 +1,785 口，權利金平均 -23%，但上方買權也跌了 -44%——<b>兩邊一起跌，主因多半是時間價值流失與波動率下降</b>，「賣方在加」的推論很弱，只能看絕對厚度。</p>
+    <p class="bnote">損益兩平＝履約價 － 10/07 結算價，換到期指口徑（+195）。到期前期指跌不破這個價，新建的那方如果是賣方就是贏家；反過來穿過去時賣方要停損或避險（賣期貨），理論上會讓走勢加速——本專案未回測。</p>
+  </div></div>
+</section>
+
+<section>
+  <div class="sec-h"><h2>下一個交易日的三個劇本</h2><span class="n mono">觸發價一律用實際成交過的價</span></div>
+  <p style="font-size:13.5px; color:var(--ink-3); margin-bottom:18px; max-width:62ch">
+    牆的撐壓預測力已經被本專案自己的回測否證過，所以下面<strong>沒有一個觸發價是從 OI 來的</strong>——
+    觸發用今天真的成交過的高低點，牆只用來決定目標放哪。</p>
+  <div class="plays"><div class="play "><div class="play-h"><h3>區間磨　48,671 – 49,136</h3><span class="tag">結構</span></div><p>夜盤已經把上下緣都試過了。這個箱子 465 點寬，沒有新消息的話明早大概率就在裡面。（夜盤還沒收，明早 05:00 後區間還會再擴。）</p><dl class="rows"><dt>進場</dt><dd>開盤三十分鐘不破上下緣 → 靠近 <span class="mono">48,727</span> 找多、靠近 <span class="mono">49,080</span> 找空</dd><dt>停損</dt><dd>各 <span class="mono">70</span> 點；箱子只有 465 點，停損放寬就沒得做</dd><dt>目標</dt><dd>對邊，不貪，分批</dd><dt>失效</dt><dd>任一邊帶量突破且 15 分鐘站穩 → 切到下面兩個劇本</dd></dl></div><div class="play bull"><div class="play-h"><h3>反彈　站上 49,136</h3><span class="tag">方向・次序在前</span></div><p>上方第一道厚牆是 <span class="mono">49,195</span>（49,000 買權 1,555 口），第一次到不要追。另外 <span class="mono">48,552 – 48,685</span> 的跳空缺口懸在腳下。</p><dl class="rows"><dt>進場</dt><dd>站上 <span class="mono">49,136</span> 且不破回</dd><dt>停損</dt><dd>跌回 <span class="mono">49,057</span></dd><dt>目標</dt><dd><span class="mono">49,195</span>（49,000 買權 1,555 口） → <span class="mono">50,195</span>（50,000 買權 2,104 口）</dd><dt>失效</dt><dd>在第一道厚牆附近出量收黑 K → 回區間劇本</dd></dl></div><div class="play bear"><div class="play-h"><h3>續跌　跌破 48,671</h3><span class="tag">方向</span></div><p>牆不會擋住，只是流動性集中處；下面通常是一排中等厚度，逐級找支撐而不是一瀉千里。</p><dl class="rows"><dt>進場</dt><dd>日盤跌破 <span class="mono">48,671</span> 且 5 分 K 收破（不是插一下）</dd><dt>停損</dt><dd>站回 <span class="mono">48,750</span></dd><dt>目標</dt><dd><span class="mono">48,195</span>（48,000 賣權 1,414 口） → <span class="mono">47,695</span>（47,500 賣權 1,101 口） → <span class="mono">47,295</span>（47,100 賣權 551 口）</dd><dt>失效</dt><dd>跌破後三十分鐘內拉回箱內 → 是假跌破</dd></dl></div></div>
+</section>
+
+<section>
+  <div class="sec-h"><h2>這張圖裡哪些算數</h2><span class="n mono">憑據分層</span></div>
+  <div class="evid">
+    <div class="ev-c fact"><h3>事實</h3><ul>
+      <li>逐履約價 OI 分布與今日增減（期交所收盤檔）</li>
+      <li>今日日盤與夜盤的開高低收、成交量</li>
+      <li>期現價差 +195 點</li>
+      <li>三大法人期貨／選擇權未平倉口數</li>
+      <li>結算倒數：10/07 剩 3 個交易日、10/21 剩 12 個交易日</li>
+    </ul></div>
+    <div class="ev-c untested"><h3>未檢定</h3><ul>
+      <li>黃金切割與延伸位（45,678 → 48,946，延伸 127.2%／138.2%／161.8%）。唯一價值是它與 OI 完全獨立，
+          重合處代表不同的人用不同方法看到同一價位——很弱的獨立確認，不是證據</li>
+      <li>Max Pain：10/07 47,500（期指 47,695，距現價 -1,425，太遠不採計）；10/21 46,600（期指 46,795，距現價 -2,325，太遠不採計）</li>
+      <li>共振帶判定（|黃金切割位 − 牆| ≤ 60 點）</li>
+    </ul></div>
+    <div class="ev-c dead"><h3>已否證</h3><ul>
+      <li>三種牆（ΔOI／OI 存量／成交量）的撐壓預測力——本專案回測全數否證，
+          所以牆只當「流動性集中處／目標」，不當「會擋住」</li>
+      <li>綠牆（選擇權籌碼區）超額報酬</li>
+      <li>Skew 的方向預測力</li>
+      <li>發動候選三層合併的 alpha</li>
+    </ul></div>
+  </div>
+  <div class="warn"><h3>下單前要知道的事</h3><ul><li><strong>這張圖不預測開盤價。</strong>明早的跳空由今晚美股決定，OI 只決定「開出來之後往哪裡走」。請在明早 08:45 之後用 <code>--morning</code> 重跑一次——那時才有整夜完整的夜盤高低。</li><li><strong>10/07 只剩 3 個交易日。</strong>Gamma 大、時間價值掉得快，價外買方在區間裡不划算；要做方向請用期指或價內一檔。</li><li><strong>期現價差今天是 +195 點</strong>，明早要重新校準——這是整張圖最大的誤差來源，頁面上的滑桿可以當場平移整張階梯。</li><li><strong>遠價外 10/02 當天冒出大 OI：</strong>10/07 52,500 買權 1,092 口（+1,081）。離現價 2,000 點以上，幾乎確定是價差單的一條腿，不要當成有人在那裡佈壓力。</li></ul></div>
+</section>
+
+<footer class="mono">
+  資料：期交所選擇權／期貨每日收盤行情、三大法人未平倉；期交所 MIS 即時報價；TWSE 每日成交統計。
+  劇本排序未經回測、不宣稱勝率，只用來決定哪個情境排第一。
+</footer>
+</div>
+<script>
+const bs=document.getElementById("bs"), bsv=document.getElementById("bsv");
+const nf=n=>n.toLocaleString("en-US");
+function applyBasis(){
+  const b=Number(bs.value);
+  bsv.textContent=(b>=0?"+":"")+b;
+  for(const s of document.querySelectorAll(".fx")) s.textContent="期指 "+nf(Number(s.dataset.k)+b);
+}
+bs.addEventListener("input", applyBasis);
+applyBasis();
+</script>
