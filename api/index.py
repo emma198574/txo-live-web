@@ -15,7 +15,15 @@ Vercel serverless function：打開網址當場抓報價、當場產 T 字報價
 
 只呼叫 build_page() / render_html()，這兩個函式都不碰檔案系統——Vercel 唯讀，
 會寫檔的 --out、歷史 CSV、ntfy 都在原腳本的 main() 裡，繞過即可。
+
+路徑（2026-10-08 加入雙市場）：
+  /       台指 T 字（原本的首頁，不變）
+  /ndx    那斯達克 NDX T 字（那斯達克選擇權T字報價.py）
+  /dual   雙市場外框：摘要列＋台指／那斯達克兩個分頁（雙市場摘要.py）
+  /mnq    小那期貨報價 JSON，給 /dual 的摘要列輪詢
+/ 與 /ndx 的頁尾都會多一段摘要 JSON（看不到，給 /dual 讀）。
 """
+import json
 
 import os
 import sys
@@ -28,7 +36,10 @@ from urllib.parse import urlparse, parse_qs
 
 BASE_DIR  = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPT    = os.path.join(BASE_DIR, "即時選擇權T字報價.py")
+NDX_SCRIPT  = os.path.join(BASE_DIR, "那斯達克選擇權T字報價.py")
+DUAL_SCRIPT = os.path.join(BASE_DIR, "雙市場摘要.py")
 FALLBACK  = "https://txo-live.pages.dev/"
+NDX_FALLBACK = "https://txo-live.pages.dev/ndx/"
 
 # Vercel 的 Python preset 是 catch-all：**所有**路徑都進這支 function，
 # vercel.json 的 rewrites 與相鄰的 api/*.py 一律被忽略。所以圖示不能另開一支
@@ -41,26 +52,25 @@ ICON = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAADo0lEQVR
 ICON_PATHS = {"/icon.png", "/favicon.ico", "/apple-touch-icon.png",
               "/apple-touch-icon-precomposed.png"}
 
-_MOD = None
+_MODS = {}
 
 
-def _load():
+def _load(name="txo_tbar", path=SCRIPT):
     """
     載入中文檔名的主腳本。模組名不能直接 import，走 importlib 指定路徑。
     載入結果快取在行程內：Vercel 的 lambda 會重用，第二次之後省掉解析成本
     （報價本身不會被快取，build_page() 每次都重抓）。
     """
-    global _MOD
-    if _MOD is None:
-        spec = importlib.util.spec_from_file_location("txo_tbar", SCRIPT)
+    if name not in _MODS:
+        spec = importlib.util.spec_from_file_location(name, path)
         mod  = importlib.util.module_from_spec(spec)
-        sys.modules["txo_tbar"] = mod
+        sys.modules[name] = mod
         spec.loader.exec_module(mod)
-        _MOD = mod
-    return _MOD
+        _MODS[name] = mod
+    return _MODS[name]
 
 
-def _error_page(exc):
+def _error_page(exc, fallback=FALLBACK, src="期交所 MIS"):
     """
     抓不到報價時的頁面。這裡刻意不只印錯誤，而是把 Cloudflare 備援網址做成
     一顆大按鈕——盤中出事時要的是「馬上有東西可以看」，不是除錯訊息。
@@ -84,9 +94,9 @@ code{{display:block;background:#1f2124;color:#ff6b5c;padding:10px;border-radius:
 </style>
 <div class="box">
   <h1>即時報價暫時取不到</h1>
-  <p>可能是期交所 MIS 沒回應，或這台伺服器連不出去。<br>
+  <p>可能是{src} 沒回應，或這台伺服器連不出去。<br>
      排程產出的版本不受影響，點下面就能看。</p>
-  <a class="btn" href="{FALLBACK}">改看排程版（Cloudflare）</a>
+  <a class="btn" href="{fallback}">改看排程版（Cloudflare）</a>
   <a class="re" href="javascript:location.reload()">↻ 重試一次即時版</a>
   <code>{detail}</code>
 </div>'''
@@ -105,23 +115,53 @@ class handler(BaseHTTPRequestHandler):
             self.wfile.write(ICON)
             return
 
-        try:
-            q = parse_qs(urlparse(self.path).query)
-            radius = int(q.get("radius", ["1500"])[0])
-        except Exception:
-            radius = 1500
+        path = path.rstrip("/") or "/"
+        q = parse_qs(urlparse(self.path).query)
+        ctype = "text/html; charset=utf-8"
 
-        try:
-            m    = _load()
-            html_out = m.render_html(m.build_page(radius=radius))
-            code = 200
-        except Exception as e:
-            html_out = _error_page(e)
-            code = 200          # 回 200，否則手機瀏覽器可能顯示自己的錯誤頁蓋掉備援連結
+        if path == "/dual":
+            # 外框不抓報價，直接回；資料由裡面兩個 iframe 與 /mnq 各自取
+            html_out = _load("dual_sum", DUAL_SCRIPT).render_shell()
+        elif path == "/mnq":
+            ctype = "application/json; charset=utf-8"
+            try:
+                d = _load("dual_sum", DUAL_SCRIPT).fetch_mnq()
+            except Exception as e:
+                d = {"ok": False, "err": str(e)}
+            html_out = json.dumps(d, ensure_ascii=False)
+        elif path == "/ndx":
+            try:
+                m  = _load("ndx_tbar", NDX_SCRIPT)
+                pg = m.build_page()
+                html_out = m.render_html(pg)
+                try:
+                    ds = _load("dual_sum", DUAL_SCRIPT)
+                    html_out = ds.inject(html_out, ds.ndx_summary(pg))
+                except Exception:
+                    pass        # 摘要失敗不該拖垮報價頁本身
+            except Exception as e:
+                html_out = _error_page(e, NDX_FALLBACK, "CBOE")
+        else:
+            try:
+                radius = int(q.get("radius", ["1500"])[0])
+            except Exception:
+                radius = 1500
+            try:
+                m    = _load()
+                pg   = m.build_page(radius=radius)
+                html_out = m.render_html(pg)
+                try:
+                    ds = _load("dual_sum", DUAL_SCRIPT)
+                    html_out = ds.inject(html_out, ds.txo_summary(pg))
+                except Exception:
+                    pass
+            except Exception as e:
+                html_out = _error_page(e)
+        code = 200              # 一律回 200，否則手機瀏覽器可能顯示自己的錯誤頁蓋掉備援連結
 
         body = html_out.encode("utf-8")
         self.send_response(code)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Type", ctype)
         # 一定要 no-store：這頁的全部價值就是「現在」，被 CDN 或瀏覽器快取就沒意義了
         self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
         self.send_header("Content-Length", str(len(body)))

@@ -946,7 +946,13 @@ DELTA_JS = """
     localStorage.setItem('txo_snap2', JSON.stringify({gen:GEN, cur:cur, base:prev.cur}));
   }
   if(!base) return;                          // 第一次看：尚無可比較的基準
-  function fmtAmt(n){ return n.toLocaleString('en-US'); }
+  // 手機版金額格是「萬」，▲▼ 增減也跟著用萬，不然單位對不上
+  var WAN = window.matchMedia && window.matchMedia('(max-width:640px)').matches;
+  function fmtAmt(n){
+    if(!WAN) return n.toLocaleString('en-US');
+    var v = n / 1e4;
+    return v >= 100 ? Math.round(v).toLocaleString('en-US') : (v >= 10 ? v.toFixed(1) : v.toFixed(2));
+  }
   function fmtPx(n){ return String(Math.round(n * 100) / 100); }   // 權利金保留小數
   cells.forEach(function(td){
     var key = keyOf(td);
@@ -1132,6 +1138,14 @@ def render_panel(rep):
 
     def fmt(n): return f"{n:,}"
 
+    # 手機版金額改用「萬」為單位（表頭標「(萬)」，格內只放數字省寬度）。
+    # 大數取整、中數一位、小數兩位，讓每格都維持在 3～4 個字以內。
+    def wan(n):
+        v = n / 1e4
+        if v >= 100: return f"{v:,.0f}"
+        if v >= 10:  return f"{v:.1f}"
+        return f"{v:.2f}" if v else "0"
+
     trs = []
     for k in rep["strikes"]:
         c = crows.get(k); p = prows.get(k)
@@ -1141,7 +1155,7 @@ def render_panel(rep):
         if c:
             cc = (f'<td class="amt" data-tab="{tid}" data-side="C" data-k="{k}" data-amt="{c["amt"]}" '
                   f'style="background:{heat(c["amt"], cmax, CALL_BASE)}">'
-                  f'<span class="amtnum">{fmt(c["amt"])}</span><span class="delta"></span></td>'
+                  f'<span class="amtnum">{fmt(c["amt"])}</span><span class="amtsm">{wan(c["amt"])}</span><span class="delta"></span></td>'
                   f'<td class="vol" style="{bar(c["vol"], cvmax, CALL_BASE, True)}">{fmt(c["vol"])}</td>'
                   f'<td class="oi">{fmt(c_oiv) if c_oiv else ""}</td>'
                   f'{chg_td(c)}'
@@ -1159,7 +1173,7 @@ def render_panel(rep):
                   f'<td class="vol" style="{bar(p["vol"], pvmax, PUT_BASE, False)}">{fmt(p["vol"])}</td>'
                   f'<td class="amt" data-tab="{tid}" data-side="P" data-k="{k}" data-amt="{p["amt"]}" '
                   f'style="background:{heat(p["amt"], pmax, PUT_BASE)}">'
-                  f'<span class="amtnum">{fmt(p["amt"])}</span><span class="delta"></span></td>')
+                  f'<span class="amtnum">{fmt(p["amt"])}</span><span class="amtsm">{wan(p["amt"])}</span><span class="delta"></span></td>')
         else:
             pc = '<td class="e"></td>'*6
         trs.append(f'<tr class="drow{atm_cls}">{cc}<td class="strike">{k:,}</td>{pc}</tr>')
@@ -1206,9 +1220,9 @@ def render_panel(rep):
 <div class="tblwrap">
 <table>
 <thead><tr>
-  <th class="grp-c">CALL 金額</th><th class="grp-c">口數</th><th class="grp-c">OI</th><th class="grp-c">今日</th><th class="grp-c">權利金</th><th class="grp-c">損益兩平</th>
+  <th class="grp-c">CALL 金額<span class="amtsm">(萬)</span></th><th class="grp-c">口數</th><th class="grp-c">OI</th><th class="grp-c">今日</th><th class="grp-c">權利金</th><th class="grp-c">損益兩平</th>
   <th>履約價</th>
-  <th class="grp-p">損益兩平</th><th class="grp-p">權利金</th><th class="grp-p">今日</th><th class="grp-p">OI</th><th class="grp-p">口數</th><th class="grp-p">PUT 金額</th>
+  <th class="grp-p">損益兩平</th><th class="grp-p">權利金</th><th class="grp-p">今日</th><th class="grp-p">OI</th><th class="grp-p">口數</th><th class="grp-p">PUT 金額<span class="amtsm">(萬)</span></th>
 </tr></thead>
 <tbody>
 {rows_html}
@@ -1572,6 +1586,14 @@ h1{{font-size:20px;margin:0 0 4px;font-weight:700;letter-spacing:.3px}}
 .zn{{color:var(--muted);font-size:10.5px;margin-top:7px;padding-top:7px;border-top:1px solid var(--hair)}}
 .tblwrap{{overflow-x:auto;background:var(--panel);border:1px solid var(--line);border-radius:12px}}
 table{{border-collapse:collapse;width:100%;font-size:12.5px;min-width:960px}}
+/* 手機版：表格不再強制 960px 寬，字與間距縮小，少橫滑一點 */
+@media(max-width:640px){{
+  td.amt .amtnum{{display:none}} td.amt .amtsm, th .amtsm{{display:block}}
+  table{{min-width:0;font-size:11px}}
+  thead th{{padding:6px 3px;font-size:9.5px;letter-spacing:0}}
+  .drow td{{padding:3px 3px}}
+  .chg{{font-size:10px}}
+}}
 thead th{{position:sticky;top:0;background:var(--panel);color:var(--muted);font-weight:600;
   font-size:10.5px;letter-spacing:.3px;padding:8px 7px;border-bottom:2px solid var(--line)}}
 .grp-c{{color:var(--call)}} .grp-p{{color:var(--put)}}
@@ -1583,6 +1605,7 @@ thead th{{position:sticky;top:0;background:var(--panel);color:var(--muted);font-
 .chg.sell{{color:var(--put);font-weight:700;background:rgba(30,160,70,.13)}}
 .chg.buy{{color:var(--call);font-weight:700;background:rgba(214,52,52,.13)}}
 .amt .amtnum{{display:block}} .px .pxnum{{display:block}}
+.amtsm{{display:none}}
 .delta{{display:none;font-size:9.5px;font-weight:700;line-height:1.4;margin-top:1px;
   padding:0 4px;border-radius:3px;background:rgba(0,0,0,.34);letter-spacing:.2px}}
 .delta.plain{{background:transparent;padding:0}}

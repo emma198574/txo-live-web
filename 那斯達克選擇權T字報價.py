@@ -824,6 +824,13 @@ h1{{font-size:20px;margin:0 0 4px;font-weight:700;letter-spacing:.3px}}
 .zn{{color:var(--muted);font-size:10.5px;margin-top:7px;padding-top:7px;border-top:1px solid var(--hair)}}
 .tblwrap{{overflow-x:auto;background:var(--panel);border:1px solid var(--line);border-radius:12px}}
 table{{border-collapse:collapse;width:100%;font-size:12.5px;min-width:960px}}
+/* 手機版：表格不再強制 960px 寬，字與間距縮小，少橫滑一點 */
+@media(max-width:640px){{
+  table{{min-width:0;font-size:11px}}
+  thead th{{padding:6px 3px;font-size:9.5px;letter-spacing:0}}
+  .drow td{{padding:3px 3px}}
+  .chg{{font-size:10px}}
+}}
 thead th{{position:sticky;top:0;background:var(--panel);color:var(--muted);font-weight:600;
   font-size:10.5px;letter-spacing:.3px;padding:8px 7px;border-bottom:2px solid var(--line)}}
 .grp-c{{color:var(--call)}} .grp-p{{color:var(--put)}}
