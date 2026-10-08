@@ -1593,6 +1593,10 @@ table{{border-collapse:collapse;width:100%;font-size:12.5px;min-width:960px}}
   thead th{{padding:6px 3px;font-size:9.5px;letter-spacing:0}}
   .drow td{{padding:3px 3px}}
   .chg{{font-size:10px}}
+  /* 履約價欄維持原本寬度與字級（未縮小前約 84px、12.5px），只縮兩側欄位。
+     不能用 width：表格比螢幕寬時各欄會被壓到內容最小寬，width 會被忽略；
+     左右留白算在最小寬裡，才撐得住。 */
+  .drow td.strike{{font-size:12.5px;padding-left:20px;padding-right:20px}}
 }}
 thead th{{position:sticky;top:0;background:var(--panel);color:var(--muted);font-weight:600;
   font-size:10.5px;letter-spacing:.3px;padding:8px 7px;border-bottom:2px solid var(--line)}}
