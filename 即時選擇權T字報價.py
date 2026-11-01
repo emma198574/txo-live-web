@@ -1244,7 +1244,7 @@ DUOKONG_JS = """
    抓不到就整張卡不顯示 —— 頁面最上面留一個空框比沒有這張卡更糟。 */
 (function(){
   var API  = '__URL__/api/day';
-  var 快   = 6;      // 黃線：多空空間 − 前 6 根（30 分鐘）均值
+  var 快   = 6;      // 舊黃線：多空空間 − 前 6 根均值（只給沒有 tk 的舊資料）
                      // 藍線＝Worker 回傳的 bmv（主力錢投票，−1~+1），不需要參數
   var 全格 = 54;     // 09:00~13:30 共 54 格。x 軸永遠鋪滿一整天，
                      // 盤中資料一根根長出來時比例才不會一直跳動。
@@ -1269,7 +1269,12 @@ DUOKONG_JS = """
      收盤 13:30 那一格沒有成交額增量、bmv 會是 null，畫線時要斷開不能當 0。 */
   function 算三線(rs){
     var s = rs.map(function(r){ return r.s; });
-    var f = 離均差(s, 快);
+    // 黃線 2026-11-01 起改用 Worker 的 tk（格內漲跌家數差）EMA(0.6)×0.7，
+    // 跟 盤中多空空間App/public/app.js 的 格內情緒() 同參數；舊資料沒有 tk 才退回離均差。
+    var 有tk = rs.length && rs.every(function(r){ return r.tk !== null && r.tk !== undefined; });
+    var e = null;
+    var f = 有tk ? rs.map(function(r){ e = (e === null) ? r.tk : 0.6 * r.tk + 0.4 * e; return e * 0.7; })
+                 : 離均差(s, 快);
     rs.forEach(function(r, i){
       r.y = Math.round(f[i]);
       r.b = (r.bmv === null || r.bmv === undefined) ? null : r.bmv;
