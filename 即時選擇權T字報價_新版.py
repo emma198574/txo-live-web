@@ -1312,7 +1312,7 @@ def render_panel(rep):
                     f'<td class="oi">{fmt(toi)}<small>{wan(stock)}</small></td>', dtd)
         ca, cv, co, cd = side_sum("C")
         pa, pv, po, pd_ = side_sum("P")
-        blank = '<td></td>' * 4
+        blank = '<td></td>' * 3
         sum_row = (f'<tr class="drow sumrow">{ca}{cv}{co}{cd}{blank}<td class="strike">合計</td>'
                    f'{blank}{pd_}{po}{pv}{pa}</tr>')
 
@@ -1332,15 +1332,13 @@ def render_panel(rep):
                   f'{chg_td(c)}'
                   f'<td class="px" data-tab="{tid}" data-side="C" data-k="{k}" data-px="{c["px"]:g}">'
                   f'<span class="pxnum">{c["px"]:g}</span><span class="delta plain"></span></td>'
-                  f'<td class="be">{c["be"]:,.0f}</td>'
                   f'{guard_td(c)}')
         else:
             # 這一側沒報價，但 OI 不會因此消失：夜盤剛開時整排都會這樣
             cc = ('<td class="e"></td>'*2 + f'<td class="oi">{fmt(c_oiv) if c_oiv else ""}</td>'
-                  + doi_td("C", k) + '<td class="e"></td>'*4)
+                  + doi_td("C", k) + '<td class="e"></td>'*3)
         if p:
             pc = (f'{guard_td(p)}'
-                  f'<td class="be">{p["be"]:,.0f}</td>'
                   f'<td class="px" data-tab="{tid}" data-side="P" data-k="{k}" data-px="{p["px"]:g}">'
                   f'<span class="pxnum">{p["px"]:g}</span><span class="delta plain"></span></td>'
                   f'{chg_td(p)}'
@@ -1351,7 +1349,7 @@ def render_panel(rep):
                   f'style="background:{heat(p["amt"], pmax, PUT_BASE)}">'
                   f'<span class="amtnum">{fmt(p["amt"])}</span><span class="amtsm">{wan(p["amt"])}</span><span class="delta"></span></td>')
         else:
-            pc = ('<td class="e"></td>'*4 + doi_td("P", k)
+            pc = ('<td class="e"></td>'*3 + doi_td("P", k)
                   + f'<td class="oi">{fmt(p_oiv) if p_oiv else ""}</td>' + '<td class="e"></td>'*2)
         trs.append(f'<tr class="drow{atm_cls}">{cc}<td class="strike">{k:,}</td>{pc}</tr>')
     rows_html = sum_row + "\n".join(trs)
@@ -1415,9 +1413,9 @@ def render_panel(rep):
 <div class="tblwrap">
 <table>
 <thead><tr>
-  <th class="grp-c">CALL 金額<span class="amtsm">(萬)</span></th><th class="grp-c">口數</th><th class="grp-c">OI</th><th class="grp-c">ΔOI<span class="thsm">金額變化(萬)</span></th><th class="grp-c">今日</th><th class="grp-c">權利金</th><th class="grp-c">損益兩平</th><th class="grp-c">防守</th>
+  <th class="grp-c">CALL 金額<span class="amtsm">(萬)</span></th><th class="grp-c">口數</th><th class="grp-c">OI</th><th class="grp-c">ΔOI<span class="thsm">金額變化(萬)</span></th><th class="grp-c">今日</th><th class="grp-c">權利金</th><th class="grp-c">防守</th>
   <th>履約價</th>
-  <th class="grp-p">防守</th><th class="grp-p">損益兩平</th><th class="grp-p">權利金</th><th class="grp-p">今日</th><th class="grp-p">ΔOI<span class="thsm">金額變化(萬)</span></th><th class="grp-p">OI</th><th class="grp-p">口數</th><th class="grp-p">PUT 金額<span class="amtsm">(萬)</span></th>
+  <th class="grp-p">防守</th><th class="grp-p">權利金</th><th class="grp-p">今日</th><th class="grp-p">ΔOI<span class="thsm">金額變化(萬)</span></th><th class="grp-p">OI</th><th class="grp-p">口數</th><th class="grp-p">PUT 金額<span class="amtsm">(萬)</span></th>
 </tr></thead>
 <tbody>
 {rows_html}
@@ -1785,7 +1783,7 @@ h1{{font-size:20px;margin:0 0 4px;font-weight:700;letter-spacing:.3px}}
 .zrow.thin .zm{{color:var(--muted);font-size:11.5px}}
 .zn{{color:var(--muted);font-size:10.5px;margin-top:7px;padding-top:7px;border-top:1px solid var(--hair)}}
 .tblwrap{{overflow-x:auto;background:var(--panel);border:1px solid var(--line);border-radius:12px}}
-table{{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1180px}}
+table{{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1060px}}
 /* 手機版：表格不再強制 960px 寬，字與間距縮小，少橫滑一點 */
 @media(max-width:640px){{
   td.amt .amtnum{{display:none}} td.amt .amtsm, th .amtsm{{display:block}}
@@ -1889,8 +1887,8 @@ thead th{{position:sticky;top:0;background:var(--panel);color:var(--muted);font-
   <span>網頁每 60 秒自動重新整理</span>
 </div>
 <div class="note">
-  <b>即時欄位</b>（MIS）：權利金、口數、金額、今日漲跌、損益兩平、防守；金額 = 權利金 × 50 × 口數，為今日累積。<br>
-  <b>防守</b>：損益兩平換算成台指期口徑 = 履約價 ± 權利金 +（台指期 − 該到期別合成期貨）。
+  <b>即時欄位</b>（MIS）：權利金、口數、金額、今日漲跌、防守；金額 = 權利金 × 50 × 口數，為今日累積。<br>
+  <b>防守</b>：台指期口徑的損益兩平位置 = 履約價 ± 權利金 +（台指期 − 該到期別合成期貨）。
   權利金優先用買賣中價；淡色虛線代表價差過大、退回最後成交價，可能陳舊。<br>
   <b>ΔOI／金額變化</b>：OI 盤中不更新，這兩欄是最新收盤檔對前一交易日，金額變化 = ΔOI × 收盤價 × 50。
   只看得出部位增減，看不出買方還是賣方。回測未發現 OI 與 ΔOI 有撐壓預測力，這裡只當呈現，不是訊號。<br>
