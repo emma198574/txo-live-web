@@ -21,6 +21,7 @@ Vercel serverless function：打開網址當場抓報價、當場產 T 字報價
   /ndx    那斯達克 NDX T 字（那斯達克選擇權T字報價.py）
   /dual   雙市場外框：摘要列＋台指／那斯達克兩個分頁（雙市場摘要.py）
   /mnq    小那期貨報價 JSON，給 /dual 的摘要列輪詢
+  /v2     台指 T 字新版試用（防守、ΔOI、合計列）；不用了就刪這個分支與 _新版.py
 / 與 /ndx 的頁尾都會多一段摘要 JSON（看不到，給 /dual 讀）。
 """
 import json
@@ -38,6 +39,7 @@ BASE_DIR  = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPT    = os.path.join(BASE_DIR, "即時選擇權T字報價.py")
 NDX_SCRIPT  = os.path.join(BASE_DIR, "那斯達克選擇權T字報價.py")
 DUAL_SCRIPT = os.path.join(BASE_DIR, "雙市場摘要.py")
+V2_SCRIPT = os.path.join(BASE_DIR, "即時選擇權T字報價_新版.py")
 FALLBACK  = "https://txo-live.pages.dev/"
 NDX_FALLBACK = "https://txo-live.pages.dev/ndx/"
 
@@ -129,6 +131,16 @@ class handler(BaseHTTPRequestHandler):
             except Exception as e:
                 d = {"ok": False, "err": str(e)}
             html_out = json.dumps(d, ensure_ascii=False)
+        elif path == "/v2":
+            try:
+                radius = int(q.get("radius", ["1500"])[0])
+            except Exception:
+                radius = 1500
+            try:
+                m = _load("txo_tbar_v2", V2_SCRIPT)
+                html_out = m.render_html(m.build_page(radius=radius))
+            except Exception as e:
+                html_out = _error_page(e)
         elif path == "/ndx":
             try:
                 m  = _load("ndx_tbar", NDX_SCRIPT)
