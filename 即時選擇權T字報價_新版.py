@@ -465,9 +465,9 @@ def group_fwd(grp):
 
 def fair_px(d):
     """
-    防守欄與合成期貨用的權利金：買賣都有且價差合理就用中價，否則退回最後成交價。
+    合成期貨用的權利金：買賣都有且價差合理就用中價，否則退回最後成交價。
     最後成交價可能是很久以前的（2026-11-06 W2 的 39200 買權只成交 19 口、收 900，
-    比更價內的 39100 買權還便宜），直接拿來算防守，相鄰履約價會上下亂跳。
+    比更價內的 39100 買權還便宜），直接拿來推合成期貨會偏掉。
     回傳 (價, 是否中價)。
     """
     if not d:
@@ -840,12 +840,8 @@ def build_report(gkey, grp, session, under, usrc, tab_id, tab_name, radius=1500)
         if not d or not d["px"]:
             return None
         px, vol = d["px"], d["vol"]
-        fair, fair_mid = fair_px(d)
         return {"K": k, "px": px, "vol": vol, "amt": int(px * 50 * vol),
                 "be": (k + px) if is_call else (k - px),
-                # 防守＝損益兩平換算成台指期口徑。沒有可信的合成期貨就不給，不硬湊。
-                "guard": None if basis is None else ((k + fair) if is_call else (k - fair)) + basis,
-                "guard_mid": fair_mid,
                 "bid": d["bid"], "ask": d["ask"],
                 "rate": d["rate"], "diff": d["diff"], "ref": d["ref"]}
 
@@ -1285,12 +1281,6 @@ def render_panel(rep):
         am = damt_of(cp, k, d)
         return (f'<td class="doi" style="background:rgba({base[0]},{base[1]},{base[2]},{t:.2f})" '
                 f'title="金額變化 {am:+,}">{d:+,}<small>{wan_s(am)}</small></td>')
-    def guard_td(r):
-        if r.get("guard") is None:
-            return '<td class="gd"></td>'
-        cls = "gd" if r["guard_mid"] else "gd lastpx"
-        tip = "買賣中價" if r["guard_mid"] else "價差過大或無報價，用最後成交價，可能陳舊"
-        return f'<td class="{cls}" title="{tip}">{r["guard"]:,.0f}</td>'
 
     # ── 合計列：全部履約價，不受畫面視窗影響
     sum_row = ""
@@ -1312,7 +1302,7 @@ def render_panel(rep):
                     f'<td class="oi">{fmt(toi)}<small>{wan(stock)}</small></td>', dtd)
         ca, cv, co, cd = side_sum("C")
         pa, pv, po, pd_ = side_sum("P")
-        blank = '<td></td>' * 3
+        blank = '<td></td>' * 2
         sum_row = (f'<tr class="drow sumrow">{ca}{cv}{co}{cd}{blank}<td class="strike">合計</td>'
                    f'{blank}{pd_}{po}{pv}{pa}</tr>')
 
@@ -1331,15 +1321,13 @@ def render_panel(rep):
                   f'{doi_td("C", k)}'
                   f'{chg_td(c)}'
                   f'<td class="px" data-tab="{tid}" data-side="C" data-k="{k}" data-px="{c["px"]:g}">'
-                  f'<span class="pxnum">{c["px"]:g}</span><span class="delta plain"></span></td>'
-                  f'{guard_td(c)}')
+                  f'<span class="pxnum">{c["px"]:g}</span><span class="delta plain"></span></td>')
         else:
             # 這一側沒報價，但 OI 不會因此消失：夜盤剛開時整排都會這樣
             cc = ('<td class="e"></td>'*2 + f'<td class="oi">{fmt(c_oiv) if c_oiv else ""}</td>'
-                  + doi_td("C", k) + '<td class="e"></td>'*3)
+                  + doi_td("C", k) + '<td class="e"></td>'*2)
         if p:
-            pc = (f'{guard_td(p)}'
-                  f'<td class="px" data-tab="{tid}" data-side="P" data-k="{k}" data-px="{p["px"]:g}">'
+            pc = (f'<td class="px" data-tab="{tid}" data-side="P" data-k="{k}" data-px="{p["px"]:g}">'
                   f'<span class="pxnum">{p["px"]:g}</span><span class="delta plain"></span></td>'
                   f'{chg_td(p)}'
                   f'{doi_td("P", k)}'
@@ -1349,18 +1337,18 @@ def render_panel(rep):
                   f'style="background:{heat(p["amt"], pmax, PUT_BASE)}">'
                   f'<span class="amtnum">{fmt(p["amt"])}</span><span class="amtsm">{wan(p["amt"])}</span><span class="delta"></span></td>')
         else:
-            pc = ('<td class="e"></td>'*3 + doi_td("P", k)
+            pc = ('<td class="e"></td>'*2 + doi_td("P", k)
                   + f'<td class="oi">{fmt(p_oiv) if p_oiv else ""}</td>' + '<td class="e"></td>'*2)
         trs.append(f'<tr class="drow{atm_cls}">{cc}<td class="strike">{k:,}</td>{pc}</tr>')
     rows_html = sum_row + "\n".join(trs)
 
-    # 標的與 ΔOI 的資料基準，放在表格正上方：防守跟 ΔOI 都有「口徑」問題，不講清楚會看錯
+    # 標的與 ΔOI 的資料基準，放在表格正上方：不講清楚口徑會看錯
     basis_txt = ""
     if rep["pfwd"]:
         basis_txt = (f'{rep["series"]} 合成期貨 <b>{rep["pfwd"]:,.0f}</b>（{rep["pfwd_src"]}）'
-                     f'　·　台指期 − 合成 <b>{rep["basis"]:+,.0f}</b> 點　·　防守已換算成台指期口徑')
+                     f'　·　台指期 − 合成 <b>{rep["basis"]:+,.0f}</b> 點　·　價平依合成期貨標示')
     else:
-        basis_txt = "合成期貨報價不足，防守暫不計算"
+        basis_txt = "合成期貨報價不足，價平改依台指期標示"
     if prev:
         doi_txt = (f'OI／ΔOI＝{oi["date"]:%m/%d} 收盤較 {oi["prev_date"]:%m/%d}，'
                    f'<b>不是盤中變化</b>（MIS 盤中無 OI）')
@@ -1413,9 +1401,9 @@ def render_panel(rep):
 <div class="tblwrap">
 <table>
 <thead><tr>
-  <th class="grp-c">CALL 金額<span class="amtsm">(萬)</span></th><th class="grp-c">口數</th><th class="grp-c">OI</th><th class="grp-c">ΔOI<span class="thsm">金額變化(萬)</span></th><th class="grp-c">今日</th><th class="grp-c">權利金</th><th class="grp-c">防守</th>
+  <th class="grp-c">CALL 金額<span class="amtsm">(萬)</span></th><th class="grp-c">口數</th><th class="grp-c">OI</th><th class="grp-c">ΔOI<span class="thsm">金額變化(萬)</span></th><th class="grp-c">今日</th><th class="grp-c">權利金</th>
   <th>履約價</th>
-  <th class="grp-p">防守</th><th class="grp-p">權利金</th><th class="grp-p">今日</th><th class="grp-p">ΔOI<span class="thsm">金額變化(萬)</span></th><th class="grp-p">OI</th><th class="grp-p">口數</th><th class="grp-p">PUT 金額<span class="amtsm">(萬)</span></th>
+  <th class="grp-p">權利金</th><th class="grp-p">今日</th><th class="grp-p">ΔOI<span class="thsm">金額變化(萬)</span></th><th class="grp-p">OI</th><th class="grp-p">口數</th><th class="grp-p">PUT 金額<span class="amtsm">(萬)</span></th>
 </tr></thead>
 <tbody>
 {rows_html}
@@ -1721,7 +1709,7 @@ def render_html(page):
 body{{margin:0;background:var(--bg);color:var(--ink);
   font-family:-apple-system,"PingFang TC","Helvetica Neue",Arial,sans-serif;
   font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased;}}
-.wrap{{max-width:1240px;margin:0 auto;
+.wrap{{max-width:1080px;margin:0 auto;
   padding:calc(24px + env(safe-area-inset-top)) calc(14px + env(safe-area-inset-right))
           calc(60px + env(safe-area-inset-bottom)) calc(14px + env(safe-area-inset-left));}}
 h1{{font-size:20px;margin:0 0 4px;font-weight:700;letter-spacing:.3px}}
@@ -1783,7 +1771,7 @@ h1{{font-size:20px;margin:0 0 4px;font-weight:700;letter-spacing:.3px}}
 .zrow.thin .zm{{color:var(--muted);font-size:11.5px}}
 .zn{{color:var(--muted);font-size:10.5px;margin-top:7px;padding-top:7px;border-top:1px solid var(--hair)}}
 .tblwrap{{overflow-x:auto;background:var(--panel);border:1px solid var(--line);border-radius:12px}}
-table{{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1060px}}
+table{{border-collapse:collapse;width:100%;font-size:12.5px;min-width:960px}}
 /* 手機版：表格不再強制 960px 寬，字與間距縮小，少橫滑一點 */
 @media(max-width:640px){{
   td.amt .amtnum{{display:none}} td.amt .amtsm, th .amtsm{{display:block}}
@@ -1817,14 +1805,11 @@ thead th{{position:sticky;top:0;background:var(--panel);color:var(--muted);font-
 .drow.atm .strike{{background:var(--atm)}}
 .drow.atm td{{border-top:1px solid #d8b24a;border-bottom:1px solid #d8b24a}}
 .note{{color:var(--muted);font-size:11.5px;line-height:1.75;margin-top:16px}}
-/* 防守、ΔOI 的口徑說明 */
+/* 合成期貨、ΔOI 的口徑說明 */
 .basis{{color:var(--muted);font-size:11.5px;line-height:1.7;margin:0 2px 8px}}
 .basis b{{color:var(--ink)}}
 .doi small,.sumrow .oi small{{display:block;font-size:9.5px;color:var(--muted);line-height:1.25}}
 .thsm{{display:block;font-size:9px;font-weight:500;opacity:.8}}
-.gd{{font-weight:600}}
-/* 退回最後成交價的防守：可能陳舊，淡化並加底線提示 */
-.gd.lastpx{{color:var(--muted);font-weight:400;text-decoration:underline dotted}}
 .sumrow td{{font-weight:700;background:var(--bg);border-bottom:2px solid var(--line)}}
 .sumrow .oi{{color:var(--ink)}}
 .note b{{color:var(--ink)}}
@@ -1887,9 +1872,7 @@ thead th{{position:sticky;top:0;background:var(--panel);color:var(--muted);font-
   <span>網頁每 60 秒自動重新整理</span>
 </div>
 <div class="note">
-  <b>即時欄位</b>（MIS）：權利金、口數、金額、今日漲跌、防守；金額 = 權利金 × 50 × 口數，為今日累積。<br>
-  <b>防守</b>：台指期口徑的損益兩平位置 = 履約價 ± 權利金 +（台指期 − 該到期別合成期貨）。
-  權利金優先用買賣中價；淡色虛線代表價差過大、退回最後成交價，可能陳舊。<br>
+  <b>即時欄位</b>（MIS）：權利金、口數、金額、今日漲跌；金額 = 權利金 × 50 × 口數，為今日累積。<br>
   <b>ΔOI／金額變化</b>：OI 盤中不更新，這兩欄是最新收盤檔對前一交易日，金額變化 = ΔOI × 收盤價 × 50。
   只看得出部位增減，看不出買方還是賣方。回測未發現 OI 與 ΔOI 有撐壓預測力，這裡只當呈現，不是訊號。<br>
   <b>合計列</b>：涵蓋該到期別全部履約價，不限畫面範圍；OI 下方小字是存量金額（OI × 收盤價 × 50，單位萬），
