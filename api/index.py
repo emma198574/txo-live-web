@@ -21,6 +21,7 @@ Vercel serverless function：打開網址當場抓報價、當場產 T 字報價
   /ndx    那斯達克 NDX T 字（那斯達克選擇權T字報價.py）
   /dual   雙市場外框：摘要列＋台指／那斯達克兩個分頁（雙市場摘要.py）
   /mnq    小那期貨報價 JSON，給 /dual 的摘要列輪詢
+  /mis    MIS 報價轉抓（白名單），給三卡警報 Worker 被 520 擋時當備援
   /v2     台指 T 字新版試用（防守、ΔOI、合計列）；不用了就刪這個分支與 _新版.py
 / 與 /ndx 的頁尾都會多一段摘要 JSON（看不到，給 /dual 讀）。
 """
@@ -104,6 +105,28 @@ code{{display:block;background:#1f2124;color:#ff6b5c;padding:10px;border-radius:
 </div>'''
 
 
+def _mis_proxy(mkt, typ, cid):
+    """原封不動轉回 MIS getQuoteList 的 JSON；失敗回 {"err": ...}。Referer 照官網頁面帶。"""
+    import requests
+    sess = "AfterHoursSession" if mkt == "1" else "RegularSession"
+    kind = "OptionsDomestic" if typ == "O" else "FuturesDomestic"
+    try:
+        r = requests.post(
+            "https://mis.taifex.com.tw/futures/api/getQuoteList",
+            json={"MarketType": mkt, "SymbolType": typ, "KindID": "1", "CID": cid,
+                  "ExpireMonth": "", "RowSize": "全部", "PageNo": "", "SortColumn": "",
+                  "AscDesc": "A"},
+            headers={"Referer": f"https://mis.taifex.com.tw/futures/{sess}/EquityIndices/{kind}/",
+                     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                                   "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"},
+            timeout=15)
+        if r.status_code != 200:
+            return json.dumps({"err": f"MIS HTTP {r.status_code}"})
+        return r.text
+    except Exception as e:
+        return json.dumps({"err": str(e)}, ensure_ascii=False)
+
+
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlparse(self.path).path
@@ -131,6 +154,19 @@ class handler(BaseHTTPRequestHandler):
             except Exception as e:
                 d = {"ok": False, "err": str(e)}
             html_out = json.dumps(d, ensure_ascii=False)
+        elif path == "/mis":
+            # 給 Cloudflare 上的三卡警報 Worker 當備援抓取點（2026-11-17 加）。
+            # MIS 前面套了 Cloudflare，從 Cloudflare Worker 打過去常整晚回 HTTP 520，
+            # 同一時間從 Vercel（AWS）抓卻正常 —— 所以 Worker 直連失敗時改繞這裡。
+            # 參數走白名單，只轉台指選擇權／期貨報價，不是任意網址的開放代理。
+            ctype = "application/json; charset=utf-8"
+            mkt = q.get("m", ["0"])[0]
+            typ = q.get("t", ["O"])[0]
+            cid = q.get("cid", [""])[0]
+            if mkt not in ("0", "1") or typ not in ("O", "F") or cid not in ("", "TXO"):
+                html_out = json.dumps({"err": "參數不在白名單"}, ensure_ascii=False)
+            else:
+                html_out = _mis_proxy(mkt, typ, cid)
         elif path == "/v2":
             try:
                 radius = int(q.get("radius", ["1500"])[0])
