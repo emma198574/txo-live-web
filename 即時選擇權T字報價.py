@@ -28,9 +28,11 @@ import re
 import csv
 import sys
 import json
+import time
 import argparse
 from datetime import datetime, date, timedelta
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from zoneinfo import ZoneInfo
 
 import requests
@@ -332,6 +334,8 @@ def fetch_txf_price(session, mkt):
 
 # ── 3. 前一交易日未平倉 OI（支撐壓力用；MIS 盤中無 OI） ────────────────────────
 
+OI_CACHE_TTL = 600
+OI_FAIL_TTL  = 60
 _OI_CACHE = {}          # 一次下載、多個到期別共用（各分頁都要查同一份收盤檔）
 
 
@@ -340,8 +344,13 @@ def load_oi_buckets():
     下載 TAIFEX 最近一個交易日的選擇權收盤檔，照「契約到期日」分桶。
     回傳 (buckets, 資料日期)；抓不到回 (None, None)。結果快取於行程內。
     """
+    # Vercel 會重用同一個行程：不設期限的話，隔天打開還是昨天那份 OI。
+    # 成功快取 10 分鐘；失敗（或另一條執行緒正在下載）只擋 1 分鐘。
     if "v" in _OI_CACHE:
-        return _OI_CACHE["v"]
+        ttl = OI_CACHE_TTL if _OI_CACHE["v"][0] else OI_FAIL_TTL
+        if time.time() - _OI_CACHE.get("ts", 0) < ttl:
+            return _OI_CACHE["v"]
+    _OI_CACHE["ts"] = time.time()
     _OI_CACHE["v"] = (None, None)
     d = datetime.now(TW_TZ).date()
     sess = requests.Session()
@@ -790,9 +799,39 @@ TABS = [("wed", "wed", 0, "週三結算"), ("fri", "fri", 0, "週五結算"), ("
 MONTH_TAB = "mth"
 
 
+# ── Vercel 時間預算（2026-11-18 加）──────────────────────────────────────────
+# Vercel function 超過 maxDuration 會直接回 504 FUNCTION_INVOCATION_TIMEOUT，
+# 連 _error_page 的備援按鈕都看不到。原本選擇權→TXF→（夜盤）日盤選擇權→OI 收盤檔
+# 全部「一個等完才換下一個」，每個 timeout 12~25 秒，MIS／期交所只要有一個慢下來，
+# 加總就破 30 秒（11-17 夜盤加了日盤那一抓之後更常發生）。
+# 改成：一開始全部同時發出去，只有本時段選擇權報價是必要的；
+# TXF、日盤金額、OI 都是選配，等到預算用完就放棄（TXF 改用 parity、少一欄、OI 空白），
+# 背景下載完的 OI 留在快取，下一次打開就有。本機／Actions 沒有時限，照舊全部等完。
+TIME_BUDGET = 18 if os.environ.get("VERCEL") else None
+
+
+def _wait(fut, deadline, default):
+    """等背景工作到 deadline；逾時或失敗回 default（不 cancel，讓它在背景跑完填快取）。"""
+    if fut is None:
+        return default
+    try:
+        return fut.result(timeout=None if deadline is None else max(0.05, deadline - time.time()))
+    except Exception as e:
+        print(f"  ⚠ 背景抓取略過：{type(e).__name__} {e}")
+        return default
+
+
 def build_page(radius=1500):
     """抓一次 MIS，拆出各分頁對應的到期別，組成整頁資料。"""
     session, mkt = current_session()
+    deadline = time.time() + TIME_BUDGET if TIME_BUDGET else None
+
+    # 選配的三樣先丟背景同時抓；shutdown(wait=False) 讓逾時的不會卡住回應
+    ex = ThreadPoolExecutor(3)
+    f_txf = ex.submit(fetch_txf_price, session, mkt)
+    f_oi  = ex.submit(load_oi_buckets)
+    f_day = ex.submit(fetch_mis_options, "0") if session == "夜盤" else None
+    ex.shutdown(wait=False)
 
     ql = fetch_mis_options(mkt)
     groups = collect_groups(ql, night=(mkt == "1"))
@@ -809,7 +848,7 @@ def build_page(radius=1500):
         picks.append((MONTH_TAB, month_tab_name(mth[1]["exp"]), mth[0], mth[1]))
 
     # 標的價：TXF 即時優先；抓不到就用成交量最大那組的 parity 推算
-    under, usrc = fetch_txf_price(session, mkt)
+    under, usrc = _wait(f_txf, deadline, (None, ""))
     if not under:
         top = max(picks, key=lambda p: p[3]["vol"])
         under, usrc = group_fwd(top[3]), "價平parity"
@@ -822,11 +861,14 @@ def build_page(radius=1500):
     # 夜盤時段多抓一次日盤（MarketType 0）。夜盤時 MIS 的 0 回的就是今天日盤收盤，
     # 抓不到只是少一欄，不影響本頁其他東西。
     day_groups = {}
-    if session == "夜盤":
+    day_ql = _wait(f_day, deadline, None)
+    if day_ql:
         try:
-            day_groups = collect_groups(fetch_mis_options("0"), night=False)
+            day_groups = collect_groups(day_ql, night=False)
         except Exception as e:
-            print(f"  ⚠ 日盤收盤報價抓不到，略過日盤金額欄：{e}")
+            print(f"  ⚠ 日盤收盤報價解析失敗，略過日盤金額欄：{e}")
+    # OI 收盤檔：等到預算用完為止；還沒好的話 fetch_prev_oi 會拿到空的（快取擋著不重抓）
+    _wait(f_oi, deadline, None)
 
     reps, errs = [], []
     for tid, name, g, v in picks:
@@ -1906,6 +1948,11 @@ def main():
     ap.add_argument("--track", action="store_true",
                     help="順便記錄『今日』欄的粉綠籌碼位置並判斷莊家處境"
                          "（追蹤_選擇權籌碼區.py；配 --notify 才會推事件）")
+    ap.add_argument("--watch", action="store_true",
+                    help="盯莊家意圖／盤中壓力區／盤中支撐區三張卡，結論變了才推播"
+                         "（追蹤_莊家意圖變動.py；配 --notify 才會推）")
+    ap.add_argument("--摘要", action="store_true",
+                    help="開了 --watch 之後仍然要推全量摘要（預設不推，避免洗版）")
     ap.add_argument("--history", default="",
                     help=f"四象限歷史 CSV 路徑（預設 <--out 同目錄>/{HIST_NAME}；填 off 不記錄）")
     ap.add_argument("--page-url", default=os.environ.get("PAGE_URL", ""),
@@ -1944,8 +1991,26 @@ def main():
         except Exception as e:
             print(f"  ⚠ 四象限歷史寫入失敗（不影響網頁）：{e}")
 
-    if args.notify:
+    # --watch 是「有變動才推」，跟這裡的全量摘要是兩種不同的推播。兩個一起開會變成
+    # 每一輪都收到一份完整摘要，變動通知反而被埋掉 —— 所以開了 --watch 就預設不推
+    # 摘要，真的兩個都要就再加 --摘要。
+    if args.notify and (args.摘要 or not args.watch):
         push_ntfy(page, page_url=args.page_url or None)
+
+    if args.watch:
+        # 三張卡的變動偵測。同樣共用這份 page，不必重抓 MIS。
+        # 失敗不該連累網頁 —— 網頁已經寫好了。
+        try:
+            import importlib.util
+            wp = os.path.join(BASE_DIR, "追蹤_莊家意圖變動.py")
+            spec = importlib.util.spec_from_file_location("txo_watch", wp)
+            wt = importlib.util.module_from_spec(spec)
+            sys.modules["txo_watch"] = wt
+            spec.loader.exec_module(wt)
+            print("\n[三張卡變動偵測]")
+            wt.watch(page, notify=args.notify, 網址=args.page_url or None)
+        except Exception as e:
+            print(f"  ⚠ 三張卡變動偵測失敗（不影響網頁）：{e}")
 
     if args.track:
         # 同一份 page 直接餵給追蹤模組，不必重抓一次 MIS。

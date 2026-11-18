@@ -895,9 +895,39 @@ TABS = [("wed", "wed", 0, "週三結算"), ("fri", "fri", 0, "週五結算"), ("
 MONTH_TAB = "mth"
 
 
+# ── Vercel 時間預算（2026-11-18 加）──────────────────────────────────────────
+# Vercel function 超過 maxDuration 會直接回 504 FUNCTION_INVOCATION_TIMEOUT，
+# 連 _error_page 的備援按鈕都看不到。原本選擇權→TXF→（夜盤）日盤選擇權→OI 收盤檔
+# 全部「一個等完才換下一個」，每個 timeout 12~25 秒，MIS／期交所只要有一個慢下來，
+# 加總就破 30 秒（11-17 夜盤加了日盤那一抓之後更常發生）。
+# 改成：一開始全部同時發出去，只有本時段選擇權報價是必要的；
+# TXF、日盤金額、OI 都是選配，等到預算用完就放棄（TXF 改用 parity、少一欄、OI 空白），
+# 背景下載完的 OI 留在快取，下一次打開就有。本機／Actions 沒有時限，照舊全部等完。
+TIME_BUDGET = 18 if os.environ.get("VERCEL") else None
+
+
+def _wait(fut, deadline, default):
+    """等背景工作到 deadline；逾時或失敗回 default（不 cancel，讓它在背景跑完填快取）。"""
+    if fut is None:
+        return default
+    try:
+        return fut.result(timeout=None if deadline is None else max(0.05, deadline - time.time()))
+    except Exception as e:
+        print(f"  ⚠ 背景抓取略過：{type(e).__name__} {e}")
+        return default
+
+
 def build_page(radius=1500):
     """抓一次 MIS，拆出各分頁對應的到期別，組成整頁資料。"""
     session, mkt = current_session()
+    deadline = time.time() + TIME_BUDGET if TIME_BUDGET else None
+
+    # 選配的三樣先丟背景同時抓；shutdown(wait=False) 讓逾時的不會卡住回應
+    ex = ThreadPoolExecutor(3)
+    f_txf = ex.submit(fetch_txf_price, session, mkt)
+    f_oi  = ex.submit(load_oi_buckets)
+    f_day = ex.submit(fetch_mis_options, "0") if session == "夜盤" else None
+    ex.shutdown(wait=False)
 
     ql = fetch_mis_options(mkt)
     groups = collect_groups(ql, night=(mkt == "1"))
@@ -914,7 +944,7 @@ def build_page(radius=1500):
         picks.append((MONTH_TAB, month_tab_name(mth[1]["exp"]), mth[0], mth[1]))
 
     # 標的價：TXF 即時優先；抓不到就用成交量最大那組的 parity 推算
-    under, usrc = fetch_txf_price(session, mkt)
+    under, usrc = _wait(f_txf, deadline, (None, ""))
     if not under:
         top = max(picks, key=lambda p: p[3]["vol"])
         under, usrc = group_fwd(top[3]), "價平parity"
@@ -927,11 +957,14 @@ def build_page(radius=1500):
     # 夜盤時段多抓一次日盤（MarketType 0）。夜盤時 MIS 的 0 回的就是今天日盤收盤，
     # 抓不到只是少一欄，不影響本頁其他東西。
     day_groups = {}
-    if session == "夜盤":
+    day_ql = _wait(f_day, deadline, None)
+    if day_ql:
         try:
-            day_groups = collect_groups(fetch_mis_options("0"), night=False)
+            day_groups = collect_groups(day_ql, night=False)
         except Exception as e:
-            print(f"  ⚠ 日盤收盤報價抓不到，略過日盤金額欄：{e}")
+            print(f"  ⚠ 日盤收盤報價解析失敗，略過日盤金額欄：{e}")
+    # OI 收盤檔：等到預算用完為止；還沒好的話 fetch_prev_oi 會拿到空的（快取擋著不重抓）
+    _wait(f_oi, deadline, None)
 
     reps, errs = [], []
     for tid, name, g, v in picks:
