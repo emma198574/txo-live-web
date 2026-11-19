@@ -339,61 +339,78 @@ OI_FAIL_TTL  = 60
 _OI_CACHE = {}          # 一次下載、多個到期別共用（各分頁都要查同一份收盤檔）
 
 
+def _download_oi(sess, d):
+    """下載單日 TAIFEX 選擇權收盤檔並照契約到期日分桶；假日／尚未公布／失敗都回 None。"""
+    try:
+        r = sess.post(TAIFEX_DL_OPT, data={
+            "down_type": "1", "commodity_id": "TXO", "commodity_id2": "all",
+            "queryStartDate": d.strftime("%Y/%m/%d"), "queryEndDate": d.strftime("%Y/%m/%d"),
+            "commodity_id2t": "",
+        }, timeout=25)
+        text = r.content.decode("ms950", errors="ignore")
+    except Exception:
+        return None
+    buckets = defaultdict(lambda: {"C": defaultdict(int), "P": defaultdict(int),
+                                   "CX": {}, "PX": {}})
+    for row in csv.DictReader(io.StringIO(text)):
+        if row.get("交易時段", "").strip() != "一般":
+            continue
+        try:
+            dt = row["契約到期日"].strip()          # 例 20260724
+            if not dt:
+                continue
+            cp = "C" if row["買賣權"].strip() == "買權" else "P"
+            k  = int(float(row["履約價"]))
+            buckets[dt][cp][k] += int(_num(row["未沖銷契約數"]) or 0)
+            buckets[dt][cp + "X"][k] = _num(row.get("收盤價"))   # 金額變化要用
+        except Exception:
+            pass
+    return buckets or None
+
+
 def load_oi_buckets():
     """
-    下載 TAIFEX 最近一個交易日的選擇權收盤檔，照「契約到期日」分桶。
-    回傳 (buckets, 資料日期)；抓不到回 (None, None)。結果快取於行程內。
+    下載 TAIFEX 最近兩個交易日的選擇權收盤檔，照「契約到期日」分桶。
+    回傳 (最新一日 buckets, 資料日期)；抓不到回 (None, None)。結果快取於行程內。
+    前一交易日存在 _OI_CACHE["prev"] = (buckets, 日期)，算 ΔOI 用；抓不到就是 (None, None)，
+    只會少 ΔOI 那一欄，不影響其他欄位。
+
+    前三個平日一次並行抓：盤中今天的檔還沒出來，「最新」是昨天、「前一日」是前天，
+    一定要看到第三個才湊得齊。序列抓會把 Vercel「隨開隨抓」的等待時間多拖好幾秒。
     """
-    # Vercel 會重用同一個行程：不設期限的話，隔天打開還是昨天那份 OI。
-    # 成功快取 10 分鐘；失敗（或另一條執行緒正在下載）只擋 1 分鐘。
+    # Vercel 會重用同一個行程，快取不設期限的話，新的收盤檔公布後 OI／ΔOI 也不會換。
+    # 成功快取 10 分鐘；失敗只擋 1 分鐘，同一次產頁的多個分頁才不會各重試一輪。
     if "v" in _OI_CACHE:
         ttl = OI_CACHE_TTL if _OI_CACHE["v"][0] else OI_FAIL_TTL
         if time.time() - _OI_CACHE.get("ts", 0) < ttl:
             return _OI_CACHE["v"]
     _OI_CACHE["ts"] = time.time()
     _OI_CACHE["v"] = (None, None)
-    d = datetime.now(TW_TZ).date()
+    _OI_CACHE["prev"] = (None, None)
+    days, d = [], datetime.now(TW_TZ).date()
+    while len(days) < 8:
+        if d.weekday() < 5:
+            days.append(d)
+        d -= timedelta(days=1)
     sess = requests.Session()
     sess.headers.update({"User-Agent": UA, "Referer": TAIFEX_DL_PAGE})
     try:
         sess.get(TAIFEX_DL_PAGE, timeout=15)
     except Exception:
         return _OI_CACHE["v"]
-    for _ in range(8):
-        while d.weekday() >= 5:
-            d -= timedelta(days=1)
-        try:
-            r = sess.post(TAIFEX_DL_OPT, data={
-                "down_type": "1", "commodity_id": "TXO", "commodity_id2": "all",
-                "queryStartDate": d.strftime("%Y/%m/%d"), "queryEndDate": d.strftime("%Y/%m/%d"),
-                "commodity_id2t": "",
-            }, timeout=25)
-            text = r.content.decode("ms950", errors="ignore")
-            # 先照到期日分桶，再挑出要的那一個到期別
-            buckets = defaultdict(lambda: {"C": defaultdict(int), "P": defaultdict(int),
-                                           "CX": {}, "PX": {}})
-            for row in csv.DictReader(io.StringIO(text)):
-                if row.get("交易時段", "").strip() != "一般":
-                    continue
-                try:
-                    dt = row["契約到期日"].strip()          # 例 20260724
-                    if not dt:
-                        continue
-                    cp = "C" if row["買賣權"].strip() == "買權" else "P"
-                    k  = int(float(row["履約價"]))
-                    oi = int(_num(row["未沖銷契約數"]) or 0)
-                    buckets[dt][cp][k] += oi
-                    buckets[dt][cp + "X"][k] = _num(row.get("收盤價"))   # 未平倉金額要用
-                except Exception:
-                    pass
-            if not buckets:
-                d -= timedelta(days=1)
-                continue
-            _OI_CACHE["v"] = (buckets, d)
-            return _OI_CACHE["v"]
-        except Exception:
-            pass
-        d -= timedelta(days=1)
+    with ThreadPoolExecutor(3) as ex:
+        got = list(ex.map(lambda x: _download_oi(sess, x), days[:3]))
+    found = [(b, x) for b, x in zip(got, days[:3]) if b]
+    for x in days[3:]:                       # 連假才走得到這裡
+        if len(found) >= 2:
+            break
+        b = _download_oi(sess, x)
+        if b:
+            found.append((b, x))
+    if found:
+        _OI_CACHE["v"] = found[0]
+    if len(found) >= 2:
+        _OI_CACHE["prev"] = found[1]
     return _OI_CACHE["v"]
 
 
@@ -403,20 +420,29 @@ def fetch_prev_oi(expiry, mon):
     以前只比對月份，同月的週選（TXZ/TX1/TXU…）與月選會被加總成同一面牆，
     支撐壓力因此失真；改用契約到期日精準比對。
     找不到該到期日時（例如遇假日調整），退回同月合計並標記 exact=False。
-    回傳 {'C':{k:oi}, 'P':{k:oi}, 'date':d, 'exp':YYYYMMDD, 'exact':bool}，失敗回 None。
+    回傳 {'C':{k:oi}, 'P':{k:oi}, 'date':d, 'exp':YYYYMMDD, 'exact':bool,
+           'CX'/'PX':{k:收盤價}, 'prev':{'C':…,'P':…} 或 None, 'prev_date':日期或 None}，失敗回 None。
+    prev 沒有這個到期別＝前一日還沒掛牌，所有 OI 都是新增（prev 給空表，ΔOI = OI）。
+    對不到單一到期日的同月合計不給 prev：幾個到期別混在一起算出來的 Δ 沒有意義。
     """
     buckets, d = load_oi_buckets()
     if not buckets:
         return None
     if expiry in buckets:
         b = buckets[expiry]
+        pb, pd_ = _OI_CACHE.get("prev", (None, None))
+        prev = None
+        if pb:
+            pv = pb.get(expiry) or {"C": {}, "P": {}}
+            prev = {"C": pv["C"], "P": pv["P"]}
         return {"C": b["C"], "P": b["P"], "CX": b["CX"], "PX": b["PX"],
-                "date": d, "exp": expiry, "exact": True}
+                "date": d, "exp": expiry, "exact": True, "prev": prev, "prev_date": pd_}
     # 對不到（假日調整或名稱解析失誤）：退回同月合計，並在畫面上標示
     same = [dt for dt in buckets if len(dt) == 8 and int(dt[4:6]) == mon]
     if same:
-        out = {"C": defaultdict(int), "P": defaultdict(int),
-               "date": d, "exp": "、".join(sorted(same)), "exact": False}
+        out = {"C": defaultdict(int), "P": defaultdict(int), "CX": {}, "PX": {},
+               "date": d, "exp": "、".join(sorted(same)), "exact": False,
+               "prev": None, "prev_date": None}
         for dt in same:
             for cp in ("C", "P"):
                 for k, v in buckets[dt][cp].items():
@@ -1205,6 +1231,21 @@ def render_panel(rep):
         # 跟外部籌碼站同格式：無條件捨去到整數萬、單位接在數字後（9504萬）；不到 1 萬留一位小數
         v = n / 1e4
         return f"{int(v)}萬" if v >= 1 else f"{v:.1f}萬"
+    # 2026-11-19 使用者要求：未平倉金額底下用小字寫增減，紅＝增加、綠＝減少。
+    # 金額變化 ＝ ΔOI × 今日收盤 × 50（外部籌碼站同定義，只反映口數增減，不含價格漲跌）。
+    # 前一日收盤檔抓不到、或這格 ΔOI＝0 就不寫。
+    _prev = oi.get("prev") if oi else None
+    def oichg_span(cp, k):
+        if not _prev:
+            return ""
+        d = oi[cp].get(k, 0) - _prev[cp].get(k, 0)
+        px = oi[cp + "X"].get(k)
+        if not d or not px:
+            return ""
+        chg = int(d * px * 50)
+        cls = "up" if chg > 0 else "down"
+        return (f'<span class="oichg {cls}" title="ΔOI {d:+,} 口 × 收盤 {px:g} × 50">'
+                f'{"+" if chg > 0 else "−"}{wan_tail(abs(chg))}</span>')
     def oiamt_td(cp, k):
         am = oiamt_of(cp, k)
         if not am:
@@ -1213,7 +1254,7 @@ def render_panel(rep):
         base = CALL_BASE if cp == "C" else PUT_BASE
         a = (am / oiamt_max[cp]) ** 0.55 * 0.6
         return (f'<td class="amt oiamt" style="background:rgba({base[0]},{base[1]},{base[2]},{a:.2f})">'
-                f'{wan_tail(am)}</td>')
+                f'{wan_tail(am)}{oichg_span(cp, k)}</td>')
 
     trs = []
     for k in rep["strikes"]:
@@ -1698,6 +1739,10 @@ thead th{{position:sticky;top:0;background:var(--panel);color:var(--muted);font-
 .e{{background:transparent!important}}
 /* 夜盤附的日盤收盤金額欄：字色淡一階、內側加一條分隔線，表示這欄不是夜盤即時 */
 td.oiamt{{color:var(--ink)}}
+/* 未平倉金額底下的增減小字：紅＝增加、綠＝減少；墊一塊面板色小底，深紅/深綠格子上也讀得到 */
+.oichg{{display:block;width:fit-content;margin:2px 0 0 auto;font-size:10px;font-weight:700;line-height:1.35;
+  padding:0 4px;border-radius:3px;background:var(--panel)}}
+.oichg.up{{color:var(--call)}} .oichg.down{{color:var(--put)}}
 .drow.atm .strike{{background:var(--atm)}}
 .drow.atm td{{border-top:1px solid #d8b24a;border-bottom:1px solid #d8b24a}}
 .note{{color:var(--muted);font-size:11.5px;line-height:1.75;margin-top:16px}}
@@ -1762,7 +1807,7 @@ td.oiamt{{color:var(--ink)}}
 </div>
 <div class="note">
   <b>即時欄位</b>（MIS）：權利金、口數、金額、今日漲跌、損益兩平；金額 = 權利金 × 50 × 口數，為今日累積。<br>
-  <b>未平倉金額</b>＝ OI × 收盤價 × 50（收盤檔，一天更新一次、盤中不變），跟外部籌碼站的「金額」同一定義；
+  <b>未平倉金額</b>＝ OI × 收盤價 × 50（收盤檔，一天更新一次、盤中不變），跟外部籌碼站的「金額」同一定義；底下小字＝較前一交易日的增減（ΔOI × 今日收盤 × 50），<span style="color:var(--call)">紅＝增加</span>、<span style="color:var(--put)">綠＝減少</span>，只算口數增減、不含價格漲跌；
   是「留著多少部位」的存量，深價內的含大量內含價值，大不代表押注強。<br>
   <b>盤中撐壓怎麼來的</b>：OI 盤中不更新，所以牆的位置改用<b>今日累積成交口數</b>抓 ——
   壓力取標的之上口數最大的買權、支撐取標的之下口數最大的賣權，範圍限在畫面的 ±1,500 點視窗內。

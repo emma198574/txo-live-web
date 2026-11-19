@@ -1332,6 +1332,21 @@ def render_panel(rep):
     def oi_td(cp, k):
         v = oi[cp].get(k) if oi else None
         return f'<td class="oi">{fmt(v) if v else ""}</td>'
+    # 2026-11-19 使用者要求：未平倉金額底下用小字寫增減，紅＝增加、綠＝減少。
+    # 金額變化 ＝ ΔOI × 今日收盤 × 50（外部籌碼站同定義，只反映口數增減，不含價格漲跌）。
+    # 前一日收盤檔抓不到、或這格 ΔOI＝0 就不寫。
+    _prev = oi.get("prev") if oi else None
+    def oichg_span(cp, k):
+        if not _prev:
+            return ""
+        d = oi[cp].get(k, 0) - _prev[cp].get(k, 0)
+        px = oi[cp + "X"].get(k)
+        if not d or not px:
+            return ""
+        chg = int(d * px * 50)
+        cls = "up" if chg > 0 else "down"
+        return (f'<span class="oichg {cls}" title="ΔOI {d:+,} 口 × 收盤 {px:g} × 50">'
+                f'{"+" if chg > 0 else "−"}{wan_tail(abs(chg))}</span>')
     def oiamt_td(cp, k):
         am = oiamt_of(cp, k)
         if not am:
@@ -1340,7 +1355,7 @@ def render_panel(rep):
         base = CALL_BASE if cp == "C" else PUT_BASE
         a = (am / oiamt_max[cp]) ** 0.55 * 0.6
         return (f'<td class="amt oiamt" style="background:rgba({base[0]},{base[1]},{base[2]},{a:.2f})">'
-                f'{wan_tail(am)}</td>')
+                f'{wan_tail(am)}{oichg_span(cp, k)}</td>')
 
     # ── 合計列：全部履約價，不受畫面視窗影響
     sum_row = ""
@@ -1866,6 +1881,10 @@ thead th{{position:sticky;top:0;background:var(--panel);color:var(--muted);font-
 .e{{background:transparent!important}}
 /* 未平倉金額：收盤檔的存量，不是即時；底色用半透明，字維持主色才讀得到 */
 td.oiamt{{color:var(--ink)}}
+/* 未平倉金額底下的增減小字：紅＝增加、綠＝減少；墊一塊面板色小底，深紅/深綠格子上也讀得到 */
+.oichg{{display:block;width:fit-content;margin:2px 0 0 auto;font-size:10px;font-weight:700;line-height:1.35;
+  padding:0 4px;border-radius:3px;background:var(--panel)}}
+.oichg.up{{color:var(--call)}} .oichg.down{{color:var(--put)}}
 .drow.atm .strike{{background:var(--atm)}}
 .drow.atm td{{border-top:1px solid #d8b24a;border-bottom:1px solid #d8b24a}}
 .note{{color:var(--muted);font-size:11.5px;line-height:1.75;margin-top:16px}}
@@ -1939,7 +1958,7 @@ td.oiamt{{color:var(--ink)}}
   <b>即時欄位</b>（MIS）：權利金、口數、金額、今日漲跌；金額 = 權利金 × 50 × 口數，為今日累積。<br>
   <b>ΔOI／金額變化</b>：OI 盤中不更新，這兩欄是最新收盤檔對前一交易日，金額變化 = ΔOI × 收盤價 × 50。
   只看得出部位增減，看不出買方還是賣方。回測未發現 OI 與 ΔOI 有撐壓預測力，這裡只當呈現，不是訊號。<br>
-  <b>未平倉金額</b>＝ OI × 收盤價 × 50，底色越深金額越大，跟外部籌碼站的「金額」同一定義；收盤檔一天更新一次，盤中不變。
+  <b>未平倉金額</b>＝ OI × 收盤價 × 50，底色越深金額越大，跟外部籌碼站的「金額」同一定義；收盤檔一天更新一次，盤中不變。底下小字＝較前一交易日的增減（ΔOI × 今日收盤 × 50），<span style="color:var(--call)">紅＝增加</span>、<span style="color:var(--put)">綠＝減少</span>，只算口數增減、不含價格漲跌；
   這是「留著多少部位」的存量，跟左右「金額」欄（今天成交的錢）不同；深價內的含大量內含價值，大不代表押注強。<br>
   <b>合計列</b>：涵蓋該到期別全部履約價，不限畫面範圍。<br>
   <b>盤中撐壓怎麼來的</b>：OI 盤中不更新，所以牆的位置改用<b>今日累積成交口數</b>抓 ——
