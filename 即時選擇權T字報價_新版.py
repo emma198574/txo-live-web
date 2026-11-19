@@ -805,7 +805,7 @@ def _side_totals(grp):
     return out
 
 
-def build_report(gkey, grp, session, under, usrc, tab_id, tab_name, radius=1500, day_grp=None):
+def build_report(gkey, grp, session, under, usrc, tab_id, tab_name, radius=1500):
     """把單一到期別（一個分頁）的資料整理成畫面要的形狀。"""
     root, mon, yr = gkey
     calls, puts = grp["C"], grp["P"]
@@ -848,17 +848,6 @@ def build_report(gkey, grp, session, under, usrc, tab_id, tab_name, radius=1500,
     crows = {k: mk(calls, k, True)  for k in strikes if mk(calls, k, True)}
     prows = {k: mk(puts,  k, False) for k in strikes if mk(puts,  k, False)}
 
-    # 夜盤一開，口數與金額就從 0 重算，日盤下午進的大單整個看不到，
-    # 而 OI 要等期交所盤後公布（2026-11-17 月選 39000~39500 各 2,000 口就是這樣漏看）。
-    # 所以夜盤時段另外附上日盤收盤的金額 = 日盤收盤價 × 50 × 日盤口數。
-    day_amt = None
-    if day_grp:
-        day_amt = {"C": {}, "P": {}}
-        for cp, src in (("C", day_grp["C"]), ("P", day_grp["P"])):
-            for k, d in src.items():
-                if d.get("px") and d.get("vol"):
-                    day_amt[cp][k] = int(d["px"] * 50 * d["vol"])
-
     add_excess(crows, under, True)
     add_excess(prows, under, False)
     zone = build_zone(crows, prows, under, oi, lo, hi)
@@ -881,7 +870,7 @@ def build_report(gkey, grp, session, under, usrc, tab_id, tab_name, radius=1500,
         "totals": _side_totals(grp),
         "strikes": strikes, "crows": crows, "prows": prows,
         "oi": oi, "time": tstr, "stale": stale, "expiry": expiry,
-        "vol": grp["vol"], "zone": zone, "mind": mind, "day_amt": day_amt,
+        "vol": grp["vol"], "zone": zone, "mind": mind,
     }
 
 
@@ -901,7 +890,7 @@ MONTH_TAB = "mth"
 # 全部「一個等完才換下一個」，每個 timeout 12~25 秒，MIS／期交所只要有一個慢下來，
 # 加總就破 30 秒（11-17 夜盤加了日盤那一抓之後更常發生）。
 # 改成：一開始全部同時發出去，只有本時段選擇權報價是必要的；
-# TXF、日盤金額、OI 都是選配，等到預算用完就放棄（TXF 改用 parity、少一欄、OI 空白），
+# TXF、OI 都是選配，等到預算用完就放棄（TXF 改用 parity、OI 空白），
 # 背景下載完的 OI 留在快取，下一次打開就有。本機／Actions 沒有時限，照舊全部等完。
 TIME_BUDGET = 18 if os.environ.get("VERCEL") else None
 
@@ -923,10 +912,9 @@ def build_page(radius=1500):
     deadline = time.time() + TIME_BUDGET if TIME_BUDGET else None
 
     # 選配的三樣先丟背景同時抓；shutdown(wait=False) 讓逾時的不會卡住回應
-    ex = ThreadPoolExecutor(3)
+    ex = ThreadPoolExecutor(2)
     f_txf = ex.submit(fetch_txf_price, session, mkt)
     f_oi  = ex.submit(load_oi_buckets)
-    f_day = ex.submit(fetch_mis_options, "0") if session == "夜盤" else None
     ex.shutdown(wait=False)
 
     ql = fetch_mis_options(mkt)
@@ -954,23 +942,13 @@ def build_page(radius=1500):
     # 一頁做不出來不該拖垮另一頁：週五冷清時整支程式會死，網頁不更新、推播也不發，
     # 而週三那頁其實資料好好的。改成逐頁隔離，全部失敗才放棄。
     # 下週三剛掛牌時常常只有個位數口成交，本來就可能做不出來，這裡會自己略過。
-    # 夜盤時段多抓一次日盤（MarketType 0）。夜盤時 MIS 的 0 回的就是今天日盤收盤，
-    # 抓不到只是少一欄，不影響本頁其他東西。
-    day_groups = {}
-    day_ql = _wait(f_day, deadline, None)
-    if day_ql:
-        try:
-            day_groups = collect_groups(day_ql, night=False)
-        except Exception as e:
-            print(f"  ⚠ 日盤收盤報價解析失敗，略過日盤金額欄：{e}")
     # OI 收盤檔：等到預算用完為止；還沒好的話 fetch_prev_oi 會拿到空的（快取擋著不重抓）
     _wait(f_oi, deadline, None)
 
     reps, errs = [], []
     for tid, name, g, v in picks:
         try:
-            reps.append(build_report(g, v, session, under, usrc, tid, name, radius=radius,
-                                     day_grp=day_groups.get(g)))
+            reps.append(build_report(g, v, session, under, usrc, tid, name, radius=radius))
         except Exception as e:
             errs.append(f"{name}：{e}")
             print(f"  ⚠ 略過分頁 {name}：{e}")
@@ -1336,26 +1314,33 @@ def render_panel(rep):
         return (f'<td class="doi" style="background:rgba({base[0]},{base[1]},{base[2]},{t:.2f})" '
                 f'title="金額變化 {am:+,}">{d:+,}<small>{wan_s(am)}</small></td>')
 
-    # 夜盤才有日盤金額欄；熱度只拿畫面內的履約價算，跟今日金額欄同一套配色
-    da = rep.get("day_amt")
-    dcmax = max((da["C"].get(k, 0) for k in rep["strikes"]), default=1) or 1 if da else 1
-    dpmax = max((da["P"].get(k, 0) for k in rep["strikes"]), default=1) or 1 if da else 1
-
-    def day_td(cp, k):
-        if not da:
-            return ""
-        v = da[cp].get(k)
-        if not v:
-            return '<td class="amt damt"></td>'
-        mx, base = (dcmax, CALL_BASE) if cp == "C" else (dpmax, PUT_BASE)
-        return (f'<td class="amt damt" style="background:{heat(v, mx, base)}">'
-                f'<span class="amtnum">{fmt(v)}</span><span class="amtsm">{wan(v)}</span></td>')
-
-    def day_sum(cp):
-        if not da:
-            return ""
-        v = sum(da[cp].values())
-        return f'<td class="amt damt"><span class="amtnum">{fmt(v)}</span><span class="amtsm">{wan(v)}</span></td>'
+    # ── 未平倉金額（存量）＝ OI × 收盤價 × 50，跟外部 TXO 籌碼站「金額」同一個定義。
+    # 「金額」欄是成交價 × 今日口數（今天的交易量），看不到「早就建好、今天沒動」
+    # 的大部位：2026-11-19 W4 38700C OI 2001 × 950 × 50 ＝ 9504萬，當天日盤成交金額只有 142萬。
+    # 2026-11-19 使用者要求獨立成一欄，並拿掉夜盤的「日盤金額」欄（那欄是流量，這欄是存量）。
+    def oiamt_of(cp, k):
+        if not oi:
+            return 0
+        px = oi[cp + "X"].get(k)
+        return int(oi[cp].get(k, 0) * px * 50) if px else 0
+    oiamt_max = {cp: (max((oiamt_of(cp, k) for k in rep["strikes"]), default=1) or 1)
+                 for cp in ("C", "P")}
+    def wan_tail(n):
+        # 跟外部籌碼站同格式：無條件捨去到整數萬、單位接在數字後（9504萬）；不到 1 萬留一位小數
+        v = n / 1e4
+        return f"{int(v)}萬" if v >= 1 else f"{v:.1f}萬"
+    def oi_td(cp, k):
+        v = oi[cp].get(k) if oi else None
+        return f'<td class="oi">{fmt(v) if v else ""}</td>'
+    def oiamt_td(cp, k):
+        am = oiamt_of(cp, k)
+        if not am:
+            return '<td class="amt oiamt"></td>'
+        # 半透明上限 .6：實色深紅會把字吃掉（9504萬那種格子一定是全欄最大、一定滿色）
+        base = CALL_BASE if cp == "C" else PUT_BASE
+        a = (am / oiamt_max[cp]) ** 0.55 * 0.6
+        return (f'<td class="amt oiamt" style="background:rgba({base[0]},{base[1]},{base[2]},{a:.2f})">'
+                f'{wan_tail(am)}</td>')
 
     # ── 合計列：全部履約價，不受畫面視窗影響
     sum_row = ""
@@ -1363,7 +1348,7 @@ def render_panel(rep):
         def side_sum(cp):
             allk = set(oi[cp]) | (set(prev[cp]) if prev else set())
             toi = sum(oi[cp].get(k, 0) for k in allk)
-            stock = sum(int(oi[cp].get(k, 0) * (oi[cp + "X"].get(k) or 0) * 50) for k in allk)
+            stock = sum(oiamt_of(cp, k) for k in allk)
             if prev:
                 dd = sum(doi_of(cp, k) for k in allk)
                 dm = sum(damt_of(cp, k, doi_of(cp, k)) for k in allk)
@@ -1374,48 +1359,47 @@ def render_panel(rep):
             return (f'<td class="amt"><span class="amtnum">{fmt(t["amt"])}</span>'
                     f'<span class="amtsm">{wan(t["amt"])}</span></td>',
                     f'<td class="vol">{fmt(t["vol"])}</td>',
-                    f'<td class="oi">{fmt(toi)}<small>{wan(stock)}</small></td>', dtd)
-        ca, cv, co, cd = side_sum("C")
-        pa, pv, po, pd_ = side_sum("P")
+                    f'<td class="amt oiamt">{wan_tail(stock)}</td>',
+                    f'<td class="oi">{fmt(toi)}</td>', dtd)
+        ca, cv, cs, co, cd = side_sum("C")
+        pa, pv, ps, po, pd_ = side_sum("P")
         blank = '<td></td>' * 2
-        sum_row = (f'<tr class="drow sumrow">{day_sum("C")}{ca}{cv}{co}{cd}{blank}<td class="strike">合計</td>'
-                   f'{blank}{pd_}{po}{pv}{pa}{day_sum("P")}</tr>')
+        sum_row = (f'<tr class="drow sumrow">{ca}{cv}{cs}{co}{cd}{blank}<td class="strike">合計</td>'
+                   f'{blank}{pd_}{po}{ps}{pv}{pa}</tr>')
 
     trs = []
     for k in rep["strikes"]:
         c = crows.get(k); p = prows.get(k)
         atm_cls = " atm" if k == rep["atm_view"] else ""
-        c_oiv = oi["C"].get(k) if oi else None
-        p_oiv = oi["P"].get(k) if oi else None
         if c:
-            cc = (day_td("C", k) +
-                  f'<td class="amt" data-tab="{tid}" data-side="C" data-k="{k}" data-amt="{c["amt"]}" '
+            cc = (f'<td class="amt" data-tab="{tid}" data-side="C" data-k="{k}" data-amt="{c["amt"]}" '
                   f'style="background:{heat(c["amt"], cmax, CALL_BASE)}">'
                   f'<span class="amtnum">{fmt(c["amt"])}</span><span class="amtsm">{wan(c["amt"])}</span><span class="delta"></span></td>'
                   f'<td class="vol" style="{bar(c["vol"], cvmax, CALL_BASE, True)}">{fmt(c["vol"])}</td>'
-                  f'<td class="oi">{fmt(c_oiv) if c_oiv else ""}</td>'
+                  f'{oiamt_td("C", k)}'
+                  f'{oi_td("C", k)}'
                   f'{doi_td("C", k)}'
                   f'{chg_td(c)}'
                   f'<td class="px" data-tab="{tid}" data-side="C" data-k="{k}" data-px="{c["px"]:g}">'
                   f'<span class="pxnum">{c["px"]:g}</span><span class="delta plain"></span></td>')
         else:
             # 這一側沒報價，但 OI 不會因此消失：夜盤剛開時整排都會這樣
-            cc = (day_td("C", k) + '<td class="e"></td>'*2 + f'<td class="oi">{fmt(c_oiv) if c_oiv else ""}</td>'
+            cc = ('<td class="e"></td>'*2 + oiamt_td("C", k) + oi_td("C", k)
                   + doi_td("C", k) + '<td class="e"></td>'*2)
         if p:
             pc = (f'<td class="px" data-tab="{tid}" data-side="P" data-k="{k}" data-px="{p["px"]:g}">'
                   f'<span class="pxnum">{p["px"]:g}</span><span class="delta plain"></span></td>'
                   f'{chg_td(p)}'
                   f'{doi_td("P", k)}'
-                  f'<td class="oi">{fmt(p_oiv) if p_oiv else ""}</td>'
+                  f'{oi_td("P", k)}'
+                  f'{oiamt_td("P", k)}'
                   f'<td class="vol" style="{bar(p["vol"], pvmax, PUT_BASE, False)}">{fmt(p["vol"])}</td>'
                   f'<td class="amt" data-tab="{tid}" data-side="P" data-k="{k}" data-amt="{p["amt"]}" '
                   f'style="background:{heat(p["amt"], pmax, PUT_BASE)}">'
-                  f'<span class="amtnum">{fmt(p["amt"])}</span><span class="amtsm">{wan(p["amt"])}</span><span class="delta"></span></td>'
-                  + day_td("P", k))
+                  f'<span class="amtnum">{fmt(p["amt"])}</span><span class="amtsm">{wan(p["amt"])}</span><span class="delta"></span></td>')
         else:
             pc = ('<td class="e"></td>'*2 + doi_td("P", k)
-                  + f'<td class="oi">{fmt(p_oiv) if p_oiv else ""}</td>' + '<td class="e"></td>'*2 + day_td("P", k))
+                  + oi_td("P", k) + oiamt_td("P", k) + '<td class="e"></td>'*2)
         trs.append(f'<tr class="drow{atm_cls}">{cc}<td class="strike">{k:,}</td>{pc}</tr>')
     rows_html = sum_row + "\n".join(trs)
 
@@ -1478,9 +1462,9 @@ def render_panel(rep):
 <div class="tblwrap">
 <table>
 <thead><tr>
-  {'<th class="grp-c dayh">日盤金額<span class="amtsm">(萬)</span></th>' if da else ''}<th class="grp-c">CALL 金額<span class="amtsm">(萬)</span></th><th class="grp-c">口數</th><th class="grp-c">OI</th><th class="grp-c">ΔOI<span class="thsm">金額變化(萬)</span></th><th class="grp-c">今日</th><th class="grp-c">權利金</th>
+  <th class="grp-c">CALL 金額<span class="amtsm">(萬)</span></th><th class="grp-c">口數</th><th class="grp-c">未平倉<br>金額</th><th class="grp-c">OI</th><th class="grp-c">ΔOI<span class="thsm">金額變化(萬)</span></th><th class="grp-c">今日</th><th class="grp-c">權利金</th>
   <th>履約價</th>
-  <th class="grp-p">權利金</th><th class="grp-p">今日</th><th class="grp-p">ΔOI<span class="thsm">金額變化(萬)</span></th><th class="grp-p">OI</th><th class="grp-p">口數</th><th class="grp-p">PUT 金額<span class="amtsm">(萬)</span></th>{'<th class="grp-p dayh">日盤金額<span class="amtsm">(萬)</span></th>' if da else ''}
+  <th class="grp-p">權利金</th><th class="grp-p">今日</th><th class="grp-p">ΔOI<span class="thsm">金額變化(萬)</span></th><th class="grp-p">OI</th><th class="grp-p">未平倉<br>金額</th><th class="grp-p">口數</th><th class="grp-p">PUT 金額<span class="amtsm">(萬)</span></th>
 </tr></thead>
 <tbody>
 {rows_html}
@@ -1880,16 +1864,15 @@ thead th{{position:sticky;top:0;background:var(--panel);color:var(--muted);font-
 .delta.plain.up{{color:var(--call)}} .delta.plain.down{{color:var(--put)}}
 .delta.up{{color:#ff6a5c}} .delta.down{{color:#37d67a}}
 .e{{background:transparent!important}}
-/* 夜盤附的日盤收盤金額欄：字色淡一階、內側加一條分隔線，表示這欄不是夜盤即時 */
-td.damt{{color:var(--muted)}} td.damt:first-child{{border-right:2px solid var(--line)}}
-td.damt:last-child{{border-left:2px solid var(--line)}} th.dayh{{opacity:.75}}
+/* 未平倉金額：收盤檔的存量，不是即時；底色用半透明，字維持主色才讀得到 */
+td.oiamt{{color:var(--ink)}}
 .drow.atm .strike{{background:var(--atm)}}
 .drow.atm td{{border-top:1px solid #d8b24a;border-bottom:1px solid #d8b24a}}
 .note{{color:var(--muted);font-size:11.5px;line-height:1.75;margin-top:16px}}
 /* 合成期貨、ΔOI 的口徑說明 */
 .basis{{color:var(--muted);font-size:11.5px;line-height:1.7;margin:0 2px 8px}}
 .basis b{{color:var(--ink)}}
-.doi small,.sumrow .oi small{{display:block;font-size:9.5px;color:var(--muted);line-height:1.25}}
+.doi small{{display:block;font-size:9.5px;color:var(--muted);line-height:1.25}}
 .thsm{{display:block;font-size:9px;font-weight:500;opacity:.8}}
 .sumrow td{{font-weight:700;background:var(--bg);border-bottom:2px solid var(--line)}}
 .sumrow .oi{{color:var(--ink)}}
@@ -1956,8 +1939,9 @@ td.damt:last-child{{border-left:2px solid var(--line)}} th.dayh{{opacity:.75}}
   <b>即時欄位</b>（MIS）：權利金、口數、金額、今日漲跌；金額 = 權利金 × 50 × 口數，為今日累積。<br>
   <b>ΔOI／金額變化</b>：OI 盤中不更新，這兩欄是最新收盤檔對前一交易日，金額變化 = ΔOI × 收盤價 × 50。
   只看得出部位增減，看不出買方還是賣方。回測未發現 OI 與 ΔOI 有撐壓預測力，這裡只當呈現，不是訊號。<br>
-  <b>合計列</b>：涵蓋該到期別全部履約價，不限畫面範圍；OI 下方小字是存量金額（OI × 收盤價 × 50，單位萬），
-  含大量內含價值，大不代表押注強。<br>
+  <b>未平倉金額</b>＝ OI × 收盤價 × 50，底色越深金額越大，跟外部籌碼站的「金額」同一定義；收盤檔一天更新一次，盤中不變。
+  這是「留著多少部位」的存量，跟左右「金額」欄（今天成交的錢）不同；深價內的含大量內含價值，大不代表押注強。<br>
+  <b>合計列</b>：涵蓋該到期別全部履約價，不限畫面範圍。<br>
   <b>盤中撐壓怎麼來的</b>：OI 盤中不更新，所以牆的位置改用<b>今日累積成交口數</b>抓 ——
   壓力取標的之上口數最大的買權、支撐取標的之下口數最大的賣權，範圍限在畫面的 ±1,500 點視窗內。
   用口數而非金額，是因為要跟 OI 牆對照，而 OI 的單位就是口數；而且金額 = 權利金×50×口數，
