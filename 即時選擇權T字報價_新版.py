@@ -50,6 +50,7 @@ MIS_FUT_DAY    = "https://mis.taifex.com.tw/futures/RegularSession/EquityIndices
 MIS_FUT_NIGHT  = "https://mis.taifex.com.tw/futures/AfterHoursSession/EquityIndices/FuturesDomestic/"
 TAIFEX_DL_OPT  = "https://www.taifex.com.tw/cht/3/dlOptDataDown"
 TAIFEX_DL_PAGE = "https://www.taifex.com.tw/cht/3/dlOptDailyMarketView"
+TAIFEX_DL_FUT  = "https://www.taifex.com.tw/cht/3/futDataDown"   # 台指期日盤收盤（防守的價差用）
 
 CALL_MON = "ABCDEFGHIJKL"      # 買權月份碼 A=1月 … L=12月
 PUT_MON  = "MNOPQRSTUVWX"      # 賣權月份碼 M=1月 … X=12月
@@ -351,7 +352,7 @@ def _download_oi(sess, d):
     except Exception:
         return None
     buckets = defaultdict(lambda: {"C": defaultdict(int), "P": defaultdict(int),
-                                   "CX": {}, "PX": {}})
+                                   "CX": {}, "PX": {}, "CS": {}, "PS": {}})
     for row in csv.DictReader(io.StringIO(text)):
         if row.get("交易時段", "").strip() != "一般":
             continue
@@ -362,10 +363,35 @@ def _download_oi(sess, d):
             cp = "C" if row["買賣權"].strip() == "買權" else "P"
             k  = int(float(row["履約價"]))
             buckets[dt][cp][k] += int(_num(row["未沖銷契約數"]) or 0)
-            buckets[dt][cp + "X"][k] = _num(row.get("收盤價"))   # 金額變化要用
+            buckets[dt][cp + "X"][k] = _num(row.get("收盤價"))   # 金額變化、防守要用
+            buckets[dt][cp + "S"][k] = _num(row.get("結算價"))   # 推日盤合成期貨用（比收盤價不陳舊）
         except Exception:
             pass
     return buckets or None
+
+
+def _download_txf_close(sess, d):
+    """單日台指期（TX）一般時段收盤價，取成交量最大的月份（跟即時標的 TXF近月 同一個挑法）。"""
+    try:
+        r = sess.post(TAIFEX_DL_FUT, data={
+            "down_type": "1", "commodity_id": "TX", "commodity_id2": "",
+            "queryStartDate": d.strftime("%Y/%m/%d"), "queryEndDate": d.strftime("%Y/%m/%d"),
+        }, timeout=25)
+        text = r.content.decode("ms950", errors="ignore")
+    except Exception:
+        return None
+    best = None
+    for row in csv.DictReader(io.StringIO(text)):
+        try:
+            if (row.get("契約", "").strip() != "TX" or row.get("交易時段", "").strip() != "一般"
+                    or "/" in row.get("到期月份(週別)", "")):      # 跳過價差單
+                continue
+            px, vol = _num(row.get("收盤價")), _num(row.get("成交量")) or 0
+            if px and (best is None or vol > best[1]):
+                best = (px, vol)
+        except Exception:
+            pass
+    return best[0] if best else None
 
 
 def load_oi_buckets():
@@ -387,6 +413,7 @@ def load_oi_buckets():
     _OI_CACHE["ts"] = time.time()
     _OI_CACHE["v"] = (None, None)
     _OI_CACHE["prev"] = (None, None)
+    _OI_CACHE["txf"] = None
     days, d = [], datetime.now(TW_TZ).date()
     while len(days) < 8:
         if d.weekday() < 5:
@@ -398,7 +425,7 @@ def load_oi_buckets():
         sess.get(TAIFEX_DL_PAGE, timeout=15)
     except Exception:
         return _OI_CACHE["v"]
-    with ThreadPoolExecutor(3) as ex:
+    with ThreadPoolExecutor(4) as ex:
         got = list(ex.map(lambda x: _download_oi(sess, x), days[:3]))
     found = [(b, x) for b, x in zip(got, days[:3]) if b]
     for x in days[3:]:                       # 連假才走得到這裡
@@ -409,6 +436,8 @@ def load_oi_buckets():
             found.append((b, x))
     if found:
         _OI_CACHE["v"] = found[0]
+        # 防守的價差要跟權利金同一天（日盤收盤）；抓不到只是防守欄留白
+        _OI_CACHE["txf"] = _download_txf_close(sess, found[0][1])
     if len(found) >= 2:
         _OI_CACHE["prev"] = found[1]
     return _OI_CACHE["v"]
@@ -436,6 +465,7 @@ def fetch_prev_oi(expiry, mon):
             pv = pb.get(expiry) or {"C": {}, "P": {}}
             prev = {"C": pv["C"], "P": pv["P"]}
         return {"C": b["C"], "P": b["P"], "CX": b["CX"], "PX": b["PX"],
+                "CS": b["CS"], "PS": b["PS"], "txf": _OI_CACHE.get("txf"),
                 "date": d, "exp": expiry, "exact": True, "prev": prev, "prev_date": pd_}
     # 對不到（假日調整或名稱解析失誤）：退回同月合計，並在畫面上標示
     same = [dt for dt in buckets if len(dt) == 8 and int(dt[4:6]) == mon]
@@ -832,6 +862,19 @@ def build_report(gkey, grp, session, under, usrc, tab_id, tab_name, radius=1500)
     expiry = grp["exp"]
     oi = fetch_prev_oi(expiry, mon)
 
+    # 防守用的「日盤價差」＝ 台指期日盤收盤 − 本到期別日盤合成期貨，跟權利金（收盤檔收盤價）同一天，
+    # 一天只換一次（下午 3 點新收盤檔出來才換），夜盤與隔天早上都不會跳。
+    # 合成期貨用結算價推：收盤價常陳舊（11/19 W4 用收盤價推，相鄰履約價差到 200 多點），
+    # 結算價逐檔都在 ±10 點內。取台指期 ±800 點內「履約 + 買權 − 賣權」的中位數。
+    dbasis = dsyn = None
+    dtxf = oi.get("txf") if oi else None
+    if dtxf and oi.get("CS"):
+        syn = sorted(k + oi["CS"][k] - oi["PS"][k] for k in oi["CS"]
+                     if abs(k - dtxf) <= PARITY_RADIUS and oi["CS"].get(k) and (oi["PS"].get(k)))
+        if len(syn) >= 3:
+            dsyn = syn[len(syn) // 2]
+            dbasis = dtxf - dsyn
+
     lo, hi = under - radius, under + radius
     strikes = sorted(k for k in set(calls) | set(puts) if lo <= k <= hi)
 
@@ -867,6 +910,7 @@ def build_report(gkey, grp, session, under, usrc, tab_id, tab_name, radius=1500)
         "session": session, "root": root, "mon": mon, "yr": yr,
         "under": under, "usrc": usrc, "atm": atm, "fwd": fwd,
         "atm_view": atm_view, "pfwd": pfwd, "pfwd_src": pfwd_src, "basis": basis,
+        "dbasis": dbasis, "dsyn": dsyn, "dtxf": dtxf,
         "totals": _side_totals(grp),
         "strikes": strikes, "crows": crows, "prows": prows,
         "oi": oi, "time": tstr, "stale": stale, "expiry": expiry,
@@ -1357,6 +1401,22 @@ def render_panel(rep):
         return (f'<td class="amt oiamt" style="background:rgba({base[0]},{base[1]},{base[2]},{a:.2f})">'
                 f'{wan_tail(am)}{oichg_span(cp, k)}</td>')
 
+    # ── 防守（期貨點位）＝ 履約 ± 權利金 ＋ 價差，全部用日盤收盤（收盤檔），一天只換一次。
+    # 2026-11-19 對外部籌碼站遮碼版反推：它的履約價標籤其實是防守（3982X ＝ 38700 ＋ 950 ＋ 價差），
+    # 價差當天 170～179、11/6 是 230。逐一試過夜盤台指期−加權（差數百點、夜盤亂跳）、
+    # 收盤／結算−加權都不合，最接近的是「台指期 − 該週選合成期貨」（兩天 169、227~232），未完全確定。
+    # 使用者選日盤收盤不要即時：夜盤深價內週選幾乎沒成交、收盤價常是舊的，且要跟 OI 同一天口徑。
+    dbasis = rep.get("dbasis")
+    def def_td(cp, k, r=None):
+        if dbasis is None or not oi:
+            return '<td class="def"></td>'
+        px = oi.get(cp + "X", {}).get(k)
+        if not px:
+            return '<td class="def"></td>'
+        v = k + px + dbasis if cp == "C" else k - px + dbasis
+        return (f'<td class="def" title="{k:,} {"＋" if cp == "C" else "−"} 收盤 {px:g}'
+                f' ＋ 價差 {dbasis:+.0f}（{oi["date"]:%m/%d} 日盤收盤）">{v:,.0f}</td>')
+
     # ── 合計列：全部履約價，不受畫面視窗影響
     sum_row = ""
     if oi:
@@ -1378,7 +1438,7 @@ def render_panel(rep):
                     f'<td class="oi">{fmt(toi)}</td>', dtd)
         ca, cv, cs, co, cd = side_sum("C")
         pa, pv, ps, po, pd_ = side_sum("P")
-        blank = '<td></td>' * 2
+        blank = '<td></td>' * 3
         sum_row = (f'<tr class="drow sumrow">{ca}{cv}{cs}{co}{cd}{blank}<td class="strike">合計</td>'
                    f'{blank}{pd_}{po}{ps}{pv}{pa}</tr>')
 
@@ -1396,13 +1456,15 @@ def render_panel(rep):
                   f'{doi_td("C", k)}'
                   f'{chg_td(c)}'
                   f'<td class="px" data-tab="{tid}" data-side="C" data-k="{k}" data-px="{c["px"]:g}">'
-                  f'<span class="pxnum">{c["px"]:g}</span><span class="delta plain"></span></td>')
+                  f'<span class="pxnum">{c["px"]:g}</span><span class="delta plain"></span></td>'
+                  + def_td("C", k, c))
         else:
             # 這一側沒報價，但 OI 不會因此消失：夜盤剛開時整排都會這樣
             cc = ('<td class="e"></td>'*2 + oiamt_td("C", k) + oi_td("C", k)
-                  + doi_td("C", k) + '<td class="e"></td>'*2)
+                  + doi_td("C", k) + '<td class="e"></td>'*2 + def_td("C", k, None))
         if p:
-            pc = (f'<td class="px" data-tab="{tid}" data-side="P" data-k="{k}" data-px="{p["px"]:g}">'
+            pc = (def_td("P", k, p) +
+                  f'<td class="px" data-tab="{tid}" data-side="P" data-k="{k}" data-px="{p["px"]:g}">'
                   f'<span class="pxnum">{p["px"]:g}</span><span class="delta plain"></span></td>'
                   f'{chg_td(p)}'
                   f'{doi_td("P", k)}'
@@ -1413,7 +1475,7 @@ def render_panel(rep):
                   f'style="background:{heat(p["amt"], pmax, PUT_BASE)}">'
                   f'<span class="amtnum">{fmt(p["amt"])}</span><span class="amtsm">{wan(p["amt"])}</span><span class="delta"></span></td>')
         else:
-            pc = ('<td class="e"></td>'*2 + doi_td("P", k)
+            pc = (def_td("P", k, None) + '<td class="e"></td>'*2 + doi_td("P", k)
                   + oi_td("P", k) + oiamt_td("P", k) + '<td class="e"></td>'*2)
         trs.append(f'<tr class="drow{atm_cls}">{cc}<td class="strike">{k:,}</td>{pc}</tr>')
     rows_html = sum_row + "\n".join(trs)
@@ -1432,6 +1494,11 @@ def render_panel(rep):
         doi_txt = f'OI＝{oi["date"]:%m/%d} 收盤　·　前一日檔案缺，ΔOI 暫缺'
     else:
         doi_txt = "OI 暫缺"
+    if rep.get("dbasis") is not None:
+        def_txt = (f'<br>防守＝{oi["date"]:%m/%d} 日盤收盤：台指期 <b>{rep["dtxf"]:,.0f}</b> − 合成 '
+                   f'{rep["dsyn"]:,.0f} ＝ 價差 <b>{rep["dbasis"]:+,.0f}</b> 點（一天一換，夜盤不跳）')
+    else:
+        def_txt = "<br>防守：日盤收盤檔或台指期收盤缺，暫缺"
 
     e = rep["expiry"]
     exp_txt = f'{e[4:6]}/{e[6:8]} 到期（{rep["series"]}）'
@@ -1473,13 +1540,13 @@ def render_panel(rep):
 </div>
 {render_mind(rep)}
 {render_zone(rep)}
-<div class="basis">{basis_txt}<br>{doi_txt}</div>
+<div class="basis">{basis_txt}<br>{doi_txt}{def_txt}</div>
 <div class="tblwrap">
 <table>
 <thead><tr>
-  <th class="grp-c">CALL 金額<span class="amtsm">(萬)</span></th><th class="grp-c">口數</th><th class="grp-c">未平倉<br>金額</th><th class="grp-c">OI</th><th class="grp-c">ΔOI<span class="thsm">金額變化(萬)</span></th><th class="grp-c">今日</th><th class="grp-c">權利金</th>
+  <th class="grp-c">CALL 金額<span class="amtsm">(萬)</span></th><th class="grp-c">口數</th><th class="grp-c">未平倉<br>金額</th><th class="grp-c">OI</th><th class="grp-c">ΔOI<span class="thsm">金額變化(萬)</span></th><th class="grp-c">今日</th><th class="grp-c">權利金</th><th class="grp-c">防守<span class="thsm">期貨點位·日盤收盤</span></th>
   <th>履約價</th>
-  <th class="grp-p">權利金</th><th class="grp-p">今日</th><th class="grp-p">ΔOI<span class="thsm">金額變化(萬)</span></th><th class="grp-p">OI</th><th class="grp-p">未平倉<br>金額</th><th class="grp-p">口數</th><th class="grp-p">PUT 金額<span class="amtsm">(萬)</span></th>
+  <th class="grp-p">防守<span class="thsm">期貨點位·日盤收盤</span></th><th class="grp-p">權利金</th><th class="grp-p">今日</th><th class="grp-p">ΔOI<span class="thsm">金額變化(萬)</span></th><th class="grp-p">OI</th><th class="grp-p">未平倉<br>金額</th><th class="grp-p">口數</th><th class="grp-p">PUT 金額<span class="amtsm">(萬)</span></th>
 </tr></thead>
 <tbody>
 {rows_html}
@@ -1866,7 +1933,7 @@ thead th{{position:sticky;top:0;background:var(--panel);color:var(--muted);font-
 .drow td{{padding:4px 7px;border-bottom:1px solid var(--hair);text-align:right;white-space:nowrap}}
 .strike{{text-align:center!important;font-weight:700;background:var(--bg);
   border-left:1px solid var(--line);border-right:1px solid var(--line)}}
-.be,.oi{{color:var(--muted)}} .px{{font-weight:600}}
+.be,.oi,.def{{color:var(--muted)}} .px{{font-weight:600}}
 .chg{{font-size:11px;color:var(--muted)}}
 .chg.sell{{color:var(--put);font-weight:700;background:rgba(30,160,70,.13)}}
 .chg.buy{{color:var(--call);font-weight:700;background:rgba(214,52,52,.13)}}
@@ -1958,6 +2025,9 @@ td.oiamt{{color:var(--ink)}}
   <b>即時欄位</b>（MIS）：權利金、口數、金額、今日漲跌；金額 = 權利金 × 50 × 口數，為今日累積。<br>
   <b>ΔOI／金額變化</b>：OI 盤中不更新，這兩欄是最新收盤檔對前一交易日，金額變化 = ΔOI × 收盤價 × 50。
   只看得出部位增減，看不出買方還是賣方。回測未發現 OI 與 ΔOI 有撐壓預測力，這裡只當呈現，不是訊號。<br>
+  <b>防守（期貨點位）</b>＝ 買權：履約價＋權利金＋價差；賣權：履約價−權利金＋價差。價差＝台指期 − 本到期別合成期貨，全部用日盤收盤（表格上方有寫），
+  把「履約價＋權利金」換成台指期的點位，可直接拿來對期貨。跟外部籌碼站的防守定義相同，但它的價差來源未完全確定，兩邊可能差幾點到十幾點。
+  一天只換一次（下午 3 點新收盤檔公布後更新），夜盤與隔天早盤都沿用，跟 OI 同一天口徑。<br>
   <b>未平倉金額</b>＝ OI × 收盤價 × 50，底色越深金額越大，跟外部籌碼站的「金額」同一定義；收盤檔一天更新一次，盤中不變。底下小字＝較前一交易日的增減（ΔOI × 今日收盤 × 50），<span style="color:var(--call)">紅＝增加</span>、<span style="color:var(--put)">綠＝減少</span>，只算口數增減、不含價格漲跌；
   這是「留著多少部位」的存量，跟左右「金額」欄（今天成交的錢）不同；深價內的含大量內含價值，大不代表押注強。<br>
   <b>合計列</b>：涵蓋該到期別全部履約價，不限畫面範圍。<br>
