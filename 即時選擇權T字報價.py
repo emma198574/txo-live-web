@@ -29,6 +29,7 @@ import csv
 import sys
 import json
 import time
+import threading
 import argparse
 from datetime import datetime, date, timedelta
 from collections import defaultdict
@@ -337,6 +338,7 @@ def fetch_txf_price(session, mkt):
 
 OI_CACHE_TTL = 600
 OI_FAIL_TTL  = 60
+_OI_LOCK = threading.Lock()   # 同一行程同時只跑一輪收盤檔下載，其他人等它（見 load_oi_buckets）
 _OI_CACHE = {}          # 一次下載、多個到期別共用（各分頁都要查同一份收盤檔）
 
 
@@ -415,7 +417,21 @@ def _download_txf_close(sess, d, timeout=(3, 5)):
     return best[0] if best else None
 
 
-def load_oi_buckets():
+def load_oi_buckets(wait=True):
+    """
+    wait=False：別人正在下載就不等，直接回目前快取（給產頁主流程用，背景那一份已經用 _wait 等過預算了）。
+    2026-11-20：以前下載一開始就把快取設成「空＋剛更新」，Vercel 上前一個請求逾時留下的下載
+    還在跑時，下一個請求會立刻拿到空的、整頁 OI／防守空白，現在改成等那一輪跑完。
+    """
+    if not _OI_LOCK.acquire(blocking=wait):
+        return _OI_CACHE.get("v", (None, None))
+    try:
+        return _load_oi_buckets_locked()
+    finally:
+        _OI_LOCK.release()
+
+
+def _load_oi_buckets_locked():
     """
     下載 TAIFEX 最近兩個交易日的選擇權收盤檔，照「契約到期日」分桶。
     回傳 (最新一日 buckets, 資料日期)；抓不到回 (None, None)。結果快取於行程內。
@@ -430,10 +446,7 @@ def load_oi_buckets():
         ttl = OI_CACHE_TTL if _OI_CACHE["v"][0] else OI_FAIL_TTL
         if time.time() - _OI_CACHE.get("ts", 0) < ttl:
             return _OI_CACHE["v"]
-    _OI_CACHE["ts"] = time.time()
-    _OI_CACHE["v"] = (None, None)
-    _OI_CACHE["prev"] = (None, None)
-    _OI_CACHE["txf"] = None
+    # 舊的快取先留著，下載完才整包換掉：下載中別人（wait=False）拿到的是上一版，不是空的
     days, d = [], datetime.now(TW_TZ).date()
     while len(days) < 8:
         if d.weekday() < 5:
@@ -462,12 +475,15 @@ def load_oi_buckets():
         if b:
             found.append((b, x))
     if found:
-        _OI_CACHE["v"] = found[0]
         # 防守的價差要跟權利金同一天（日盤收盤）；抓不到只是防守欄留白
-        _OI_CACHE["txf"] = txfs.get(found[0][1]) or _download_txf_close(sess, found[0][1])
-        _OI_CACHE["txf_ts"] = time.time()
-    if len(found) >= 2:
-        _OI_CACHE["prev"] = found[1]
+        txf = txfs.get(found[0][1]) or _download_txf_close(sess, found[0][1])
+        _OI_CACHE.update(v=found[0], prev=found[1] if len(found) >= 2 else (None, None),
+                         txf=txf, txf_ts=time.time(), ts=time.time())
+    elif _OI_CACHE.get("v", (None, None))[0]:
+        # 這輪全失敗但手上有上一版：繼續用，1 分鐘後再試
+        _OI_CACHE["ts"] = time.time() - OI_CACHE_TTL + OI_FAIL_TTL
+    else:
+        _OI_CACHE.update(v=(None, None), prev=(None, None), txf=None, ts=time.time())
     return _OI_CACHE["v"]
 
 
@@ -482,7 +498,7 @@ def fetch_prev_oi(expiry, mon):
     prev 沒有這個到期別＝前一日還沒掛牌，所有 OI 都是新增（prev 給空表，ΔOI = OI）。
     對不到單一到期日的同月合計不給 prev：幾個到期別混在一起算出來的 Δ 沒有意義。
     """
-    buckets, d = load_oi_buckets()
+    buckets, d = load_oi_buckets(wait=False)
     if not buckets:
         return None
     if expiry in buckets:
