@@ -343,11 +343,11 @@ _OI_CACHE = {}          # 一次下載、多個到期別共用（各分頁都要
 def _download_oi(sess, d):
     """下載單日 TAIFEX 選擇權收盤檔並照契約到期日分桶；假日／尚未公布／失敗都回 None。"""
     try:
-        r = sess.post(TAIFEX_DL_OPT, data={
+        r = _taifex_post(sess, TAIFEX_DL_OPT, data={
             "down_type": "1", "commodity_id": "TXO", "commodity_id2": "all",
             "queryStartDate": d.strftime("%Y/%m/%d"), "queryEndDate": d.strftime("%Y/%m/%d"),
             "commodity_id2t": "",
-        }, timeout=25)
+        })
         text = r.content.decode("ms950", errors="ignore")
     except Exception:
         return None
@@ -372,10 +372,28 @@ def _download_oi(sess, d):
     return buckets or None
 
 
-def _download_txf_close(sess, d, timeout=25):
+def _taifex_post(sess, url, data, timeout=(5, 8)):
+    """
+    期交所下載端點共用：短逾時，失敗就換一條全新連線重試一次。
+    2026-11-20 Vercel 實測：三天收盤檔並行抓，其中一份（11/19）會整個卡住不回，
+    原本 timeout 25 秒、又遇上 lambda 在請求之間被凍結，整頁 OI／防守空白好幾分鐘。
+    下載本身正常只要 0.6 秒，卡住的直接放棄重抓比較快；不帶 session cookie 也下載得到。
+    """
+    try:
+        r = sess.post(url, data=data, timeout=timeout)
+        r.raise_for_status()
+        return r
+    except Exception:
+        r = requests.post(url, data=data, timeout=timeout,
+                          headers={"User-Agent": UA, "Referer": TAIFEX_DL_PAGE})
+        r.raise_for_status()
+        return r
+
+
+def _download_txf_close(sess, d, timeout=(5, 8)):
     """單日台指期（TX）一般時段收盤價，取成交量最大的月份（跟即時標的 TXF近月 同一個挑法）。"""
     try:
-        r = sess.post(TAIFEX_DL_FUT, data={
+        r = _taifex_post(sess, TAIFEX_DL_FUT, data={
             "down_type": "1", "commodity_id": "TX", "commodity_id2": "",
             "queryStartDate": d.strftime("%Y/%m/%d"), "queryEndDate": d.strftime("%Y/%m/%d"),
         }, timeout=timeout)
@@ -403,8 +421,7 @@ def load_oi_buckets():
     前一交易日存在 _OI_CACHE["prev"] = (buckets, 日期)，算 ΔOI 用；抓不到就是 (None, None)，
     只會少 ΔOI 那一欄，不影響其他欄位。
 
-    前三個平日一次並行抓：盤中今天的檔還沒出來，「最新」是昨天、「前一日」是前天，
-    一定要看到第三個才湊得齊。序列抓會把 Vercel「隨開隨抓」的等待時間多拖好幾秒。
+    需要的兩天一次並行抓（下午 3 點前從昨天算起）；缺的再往前一天一天補。
     """
     # Vercel 會重用同一個行程，快取不設期限的話，新的收盤檔公布後 OI／ΔOI 也不會換。
     # 成功快取 10 分鐘；失敗只擋 1 分鐘，同一次產頁的多個分頁才不會各重試一輪。
@@ -424,19 +441,23 @@ def load_oi_buckets():
     sess = requests.Session()
     sess.headers.update({"User-Agent": UA, "Referer": TAIFEX_DL_PAGE})
     try:
-        sess.get(TAIFEX_DL_PAGE, timeout=15)
+        sess.get(TAIFEX_DL_PAGE, timeout=(5, 8))
     except Exception:
-        return _OI_CACHE["v"]
-    # 台指期收盤（防守的價差用）跟選擇權收盤檔一起並行抓三天，之後挑跟收盤檔同一天的。
+        pass                                 # 下載不需要這頁的 cookie，失敗照樣往下抓
+    # 台指期收盤（防守的價差用）跟選擇權收盤檔一起並行抓，之後挑跟收盤檔同一天的。
     # 2026-11-20 以前是收盤檔抓完才「接著」抓台指期：Vercel 上這一步常常沒做完
     # （回應送出後 lambda 被凍結、或剛好卡在 18 秒預算），快取卻已經標成功，
     # 結果 10 分鐘內整頁防守都是空的，而且一直重演。
-    with ThreadPoolExecutor(6) as ex:
-        f_txfs = [ex.submit(_download_txf_close, sess, x) for x in days[:3]]
-        got = list(ex.map(lambda x: _download_oi(sess, x), days[:3]))
-        txfs = {x: f.result() for x, f in zip(days[:3], f_txfs)}
-    found = [(b, x) for b, x in zip(got, days[:3]) if b]
-    for x in days[3:]:                       # 連假才走得到這裡
+    # 只抓需要的兩天：下午 3 點前今天的收盤檔還沒出來，從昨天算起（以前固定抓三天，
+    # 多一份 600KB 下載＋解析，Vercel 上解析一份要 2～5 秒）。3 點後檔案晚出就靠下面的迴圈往前補。
+    if datetime.now(TW_TZ).hour < 15 and days[0] == datetime.now(TW_TZ).date():
+        days = days[1:]
+    with ThreadPoolExecutor(4) as ex:
+        f_txfs = [ex.submit(_download_txf_close, sess, x) for x in days[:2]]
+        got = list(ex.map(lambda x: _download_oi(sess, x), days[:2]))
+        txfs = {x: f.result() for x, f in zip(days[:2], f_txfs)}
+    found = [(b, x) for b, x in zip(got, days[:2]) if b]
+    for x in days[2:]:                       # 連假或收盤檔晚出才走得到這裡
         if len(found) >= 2:
             break
         b = _download_oi(sess, x)
