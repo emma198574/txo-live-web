@@ -383,12 +383,13 @@ def _download_oi_body(sess, d):
     return buckets or None
 
 
-def _taifex_post(sess, url, data, timeout=(5, 8)):
+def _taifex_post(sess, url, data, timeout=(3, 5)):
     """
     期交所下載端點共用：短逾時，失敗就換一條全新連線重試一次。
     2026-11-20 Vercel 實測：三天收盤檔並行抓，其中一份（11/19）會整個卡住不回，
     原本 timeout 25 秒、又遇上 lambda 在請求之間被凍結，整頁 OI／防守空白好幾分鐘。
     下載本身正常只要 0.6 秒，卡住的直接放棄重抓比較快；不帶 session cookie 也下載得到。
+    逾時 (連線 3, 讀取 5)：兩次加起來最壞約 16 秒，要塞得進 Vercel 18 秒預算。
     """
     try:
         r = sess.post(url, data=data, timeout=timeout)
@@ -401,7 +402,7 @@ def _taifex_post(sess, url, data, timeout=(5, 8)):
         return r
 
 
-def _download_txf_close(sess, d, timeout=(5, 8)):
+def _download_txf_close(sess, d, timeout=(3, 5)):
     """單日台指期（TX）一般時段收盤價，取成交量最大的月份（跟即時標的 TXF近月 同一個挑法）。"""
     try:
         r = _taifex_post(sess, TAIFEX_DL_FUT, data={
@@ -452,10 +453,7 @@ def load_oi_buckets():
         d -= timedelta(days=1)
     sess = requests.Session()
     sess.headers.update({"User-Agent": UA, "Referer": TAIFEX_DL_PAGE})
-    try:
-        sess.get(TAIFEX_DL_PAGE, timeout=(5, 8))
-    except Exception:
-        pass                                 # 下載不需要這頁的 cookie，失敗照樣往下抓
+    # 不再先開下載頁拿 cookie：下載端點不需要（實測），多一個請求就多一段可能卡住的逾時。
     # 台指期收盤（防守的價差用）跟選擇權收盤檔一起並行抓，之後挑跟收盤檔同一天的。
     # 2026-11-20 以前是收盤檔抓完才「接著」抓台指期：Vercel 上這一步常常沒做完
     # （回應送出後 lambda 被凍結、或剛好卡在 18 秒預算），快取卻已經標成功，
