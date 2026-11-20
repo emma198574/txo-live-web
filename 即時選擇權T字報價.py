@@ -363,20 +363,22 @@ def _download_oi(sess, d):
             cp = "C" if row["買賣權"].strip() == "買權" else "P"
             k  = int(float(row["履約價"]))
             buckets[dt][cp][k] += int(_num(row["未沖銷契約數"]) or 0)
-            buckets[dt][cp + "X"][k] = _num(row.get("收盤價"))   # 金額變化、防守要用
+            # 金額變化、防守要用。當天沒成交的履約價收盤價是空的（OI 照樣在），未平倉金額、防守就會整格空白；
+            # 2026-11-20 W4 有 112 檔是這樣。退回用結算價（期交所每檔都會給，到期當天的那個到期別除外）。
+            buckets[dt][cp + "X"][k] = _num(row.get("收盤價")) or _num(row.get("結算價"))
             buckets[dt][cp + "S"][k] = _num(row.get("結算價"))   # 推日盤合成期貨用（比收盤價不陳舊）
         except Exception:
             pass
     return buckets or None
 
 
-def _download_txf_close(sess, d):
+def _download_txf_close(sess, d, timeout=25):
     """單日台指期（TX）一般時段收盤價，取成交量最大的月份（跟即時標的 TXF近月 同一個挑法）。"""
     try:
         r = sess.post(TAIFEX_DL_FUT, data={
             "down_type": "1", "commodity_id": "TX", "commodity_id2": "",
             "queryStartDate": d.strftime("%Y/%m/%d"), "queryEndDate": d.strftime("%Y/%m/%d"),
-        }, timeout=25)
+        }, timeout=timeout)
         text = r.content.decode("ms950", errors="ignore")
     except Exception:
         return None
@@ -425,8 +427,14 @@ def load_oi_buckets():
         sess.get(TAIFEX_DL_PAGE, timeout=15)
     except Exception:
         return _OI_CACHE["v"]
-    with ThreadPoolExecutor(3) as ex:
+    # 台指期收盤（防守的價差用）跟選擇權收盤檔一起並行抓三天，之後挑跟收盤檔同一天的。
+    # 2026-11-20 以前是收盤檔抓完才「接著」抓台指期：Vercel 上這一步常常沒做完
+    # （回應送出後 lambda 被凍結、或剛好卡在 18 秒預算），快取卻已經標成功，
+    # 結果 10 分鐘內整頁防守都是空的，而且一直重演。
+    with ThreadPoolExecutor(6) as ex:
+        f_txfs = [ex.submit(_download_txf_close, sess, x) for x in days[:3]]
         got = list(ex.map(lambda x: _download_oi(sess, x), days[:3]))
+        txfs = {x: f.result() for x, f in zip(days[:3], f_txfs)}
     found = [(b, x) for b, x in zip(got, days[:3]) if b]
     for x in days[3:]:                       # 連假才走得到這裡
         if len(found) >= 2:
@@ -437,7 +445,8 @@ def load_oi_buckets():
     if found:
         _OI_CACHE["v"] = found[0]
         # 防守的價差要跟權利金同一天（日盤收盤）；抓不到只是防守欄留白
-        _OI_CACHE["txf"] = _download_txf_close(sess, found[0][1])
+        _OI_CACHE["txf"] = txfs.get(found[0][1]) or _download_txf_close(sess, found[0][1])
+        _OI_CACHE["txf_ts"] = time.time()
     if len(found) >= 2:
         _OI_CACHE["prev"] = found[1]
     return _OI_CACHE["v"]
@@ -464,6 +473,12 @@ def fetch_prev_oi(expiry, mon):
         if pb:
             pv = pb.get(expiry) or {"C": {}, "P": {}}
             prev = {"C": pv["C"], "P": pv["P"]}
+        if not _OI_CACHE.get("txf") and time.time() - _OI_CACHE.get("txf_ts", 0) > OI_FAIL_TTL:
+            # 收盤檔在快取裡、台指期收盤卻是空的（上一輪沒抓到）：自己補抓一次，短 timeout 免得拖慢產頁
+            _OI_CACHE["txf_ts"] = time.time()
+            s2 = requests.Session()
+            s2.headers.update({"User-Agent": UA, "Referer": TAIFEX_DL_PAGE})
+            _OI_CACHE["txf"] = _download_txf_close(s2, d, timeout=6)
         return {"C": b["C"], "P": b["P"], "CX": b["CX"], "PX": b["PX"],
                 "CS": b["CS"], "PS": b["PS"], "txf": _OI_CACHE.get("txf"),
                 "date": d, "exp": expiry, "exact": True, "prev": prev, "prev_date": pd_}
