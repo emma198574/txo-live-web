@@ -342,6 +342,15 @@ _OI_CACHE = {}          # 一次下載、多個到期別共用（各分頁都要
 
 def _download_oi(sess, d):
     """下載單日 TAIFEX 選擇權收盤檔並照契約到期日分桶；假日／尚未公布／失敗都回 None。"""
+    t0 = time.time()
+    try:
+        return _download_oi_body(sess, d)
+    finally:
+        # 診斷用（2026-11-20）：Vercel 冷啟動時收盤檔超過 18 秒，看是下載慢還是解析慢
+        _OI_CACHE.setdefault("diag", []).append(f"opt{d:%m%d} {time.time()-t0:.1f}s")
+
+
+def _download_oi_body(sess, d):
     try:
         r = sess.post(TAIFEX_DL_OPT, data={
             "down_type": "1", "commodity_id": "TXO", "commodity_id2": "all",
@@ -349,7 +358,9 @@ def _download_oi(sess, d):
             "commodity_id2t": "",
         }, timeout=25)
         text = r.content.decode("ms950", errors="ignore")
-    except Exception:
+        _OI_CACHE.setdefault("diag", []).append(f"dl{d:%m%d} {r.elapsed.total_seconds():.1f}s {len(r.content)//1024}KB")
+    except Exception as e:
+        _OI_CACHE.setdefault("diag", []).append(f"dl{d:%m%d} 失敗 {type(e).__name__}")
         return None
     buckets = defaultdict(lambda: {"C": defaultdict(int), "P": defaultdict(int),
                                    "CX": {}, "PX": {}, "CS": {}, "PS": {}})
@@ -416,6 +427,7 @@ def load_oi_buckets():
     _OI_CACHE["v"] = (None, None)
     _OI_CACHE["prev"] = (None, None)
     _OI_CACHE["txf"] = None
+    _OI_CACHE["diag"] = [f"start {datetime.now(TW_TZ):%H:%M:%S}"]
     days, d = [], datetime.now(TW_TZ).date()
     while len(days) < 8:
         if d.weekday() < 5:
@@ -2089,7 +2101,7 @@ td.oiamt{{color:var(--ink)}}
   <b>限制</b>：OI 為期交所盤後公布，盤中沿用前一日；成交金額只知道成交，不知道那一口是新倉還是平倉，
   所以「築牆」是傾向推論而非事實。此表為 TAIFEX MIS 約每 5 秒的準即時報價，非逐筆。
 </div>
-</div>''' + TAB_JS + DELTA_JS + DUOKONG_JS
+</div>''' + TAB_JS + DELTA_JS + DUOKONG_JS + f'<!-- oi-diag: {" | ".join(_OI_CACHE.get("diag", []))} -->'
 
 
 # ── 6. ntfy 推播 ─────────────────────────────────────────────────────────────
