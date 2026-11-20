@@ -1,0 +1,832 @@
+<meta charset="utf-8">
+<title>台指選擇權即時 T 字報價</title>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<!-- 加到 iPhone 主畫面後全螢幕開啟（沒有這行會一直帶著 Safari 的網址列與工具列）。
+     status bar 設成透明是因為本頁 light/dark 自動切換：設死 black 或 default
+     一定會有一種模式下狀態列跟頁面撞色，透明才能讓 --bg 直接透上來。
+     代價是內容會延伸到瀏海底下，靠下面 .wrap 的 safe-area-inset 補回來。 -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="台指T字">
+<meta name="theme-color" content="#17181a">
+<!-- /icon.png 由 Vercel 的 api/icon.py 服務。排程版（Cloudflare）沒有這個路徑會 404，
+     iOS 就退回用網頁截圖當圖示——備援頁不需要漂亮圖示，故意不為它多改 workflow。 -->
+<link rel="apple-touch-icon" href="/icon.png">
+<link rel="icon" href="/icon.png">
+<style>
+:root{--bg:#f7f6f3;--panel:#fff;--ink:#1c1b19;--muted:#6b6862;--line:#e7e4dd;
+  --call:#c0392b;--put:#1e7a3c;--atm:#fff6d8;--hair:#efece5;}
+@media(prefers-color-scheme:dark){:root{--bg:#17181a;--panel:#1f2124;--ink:#ececec;
+  --muted:#9a9790;--line:#2e3033;--call:#ff6b5c;--put:#54c777;--atm:#3a3418;--hair:#26282b;}}
+:root[data-theme=dark]{--bg:#17181a;--panel:#1f2124;--ink:#ececec;--muted:#9a9790;
+  --line:#2e3033;--call:#ff6b5c;--put:#54c777;--atm:#3a3418;--hair:#26282b;}
+:root[data-theme=light]{--bg:#f7f6f3;--panel:#fff;--ink:#1c1b19;--muted:#6b6862;
+  --line:#e7e4dd;--call:#c0392b;--put:#1e7a3c;--atm:#fff6d8;--hair:#efece5;}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font-family:-apple-system,"PingFang TC","Helvetica Neue",Arial,sans-serif;
+  font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased;}
+.wrap{max-width:1080px;margin:0 auto;
+  padding:calc(24px + env(safe-area-inset-top)) calc(14px + env(safe-area-inset-right))
+          calc(60px + env(safe-area-inset-bottom)) calc(14px + env(safe-area-inset-left));}
+h1{font-size:20px;margin:0 0 4px;font-weight:700;letter-spacing:.3px}
+.sub{color:var(--muted);font-size:12.5px;margin-bottom:6px;line-height:1.6}
+/* 資料新鮮度：雲端排程常被 GitHub 跳過，這裡讓「這份資料多舊」一眼可見 */
+#age{font-weight:600}
+#age.stale{color:#d8b24a}
+#age.dead{color:#ff6a5c}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#9a9790;margin-right:6px;
+  vertical-align:middle;animation:pulse 1.6s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+@media(prefers-reduced-motion:reduce){.dot{animation:none}}
+.kpis{display:grid;grid-template-columns:repeat(5,1fr);gap:9px;margin:14px 0}
+@media(max-width:640px){.kpis{grid-template-columns:repeat(2,1fr)}}
+.kpi{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+.kpi .l{font-size:10.5px;color:var(--muted);letter-spacing:.4px;margin-bottom:4px}
+.kpi .v{font-size:18px;font-weight:700} .kpi .v small{font-size:11px;font-weight:500;color:var(--muted)}
+.kpi.call .v{color:var(--call)} .kpi.put .v{color:var(--put)}
+/* 莊家意圖卡：四象限結論。過期時整張轉灰並蓋警語，見 AGE_JS */
+.mind{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--muted);
+  border-radius:10px;padding:12px 14px;margin:0 0 10px}
+.mind.bull{border-left-color:var(--call)} .mind.bear{border-left-color:var(--put)}
+.mind.range,.mind.vol{border-left-color:#d8b24a}
+.mh{font-size:12px;font-weight:700;color:var(--muted);letter-spacing:.4px}
+.mq{color:var(--ink);font-size:16px;margin-left:9px;letter-spacing:0}
+.mind.bull .mq{color:var(--call)} .mind.bear .mq{color:var(--put)}
+.mind.range .mq,.mind.vol .mq{color:#c99a1e}
+.mlegs{display:grid;grid-template-columns:1fr 1fr;gap:6px 14px;margin:9px 0 8px}
+@media(max-width:640px){.mlegs{grid-template-columns:1fr}}
+.leg{display:flex;align-items:baseline;gap:7px;font-size:12px;flex-wrap:wrap}
+.lgl{color:var(--muted);font-size:10.5px;min-width:88px}
+.leg b{font-size:13px;font-weight:800;letter-spacing:.5px}
+.leg b.sell{color:var(--put)} .leg b.buy{color:var(--call)} .leg b.mid{color:var(--muted)}
+.lgd{font-size:11.5px} .lgn{color:var(--muted);font-size:10.5px}
+.mhow{font-size:12.5px;line-height:1.7;padding-top:8px;border-top:1px solid var(--hair)}
+.mrange{font-size:12.5px;margin-top:7px} .mrange b{font-size:15px}
+.mrange small{font-size:9.5px;color:var(--muted);font-weight:500;margin-left:3px}
+.mshift{font-size:11px;color:var(--muted);margin-top:5px}
+.mnote{color:var(--muted);font-size:10.5px;margin-top:8px;padding-top:7px;
+  border-top:1px solid var(--hair);line-height:1.6}
+.mexp{display:none;font-size:11.5px;font-weight:700;color:#ff6a5c;
+  margin-top:8px;padding-top:7px;border-top:1px solid var(--hair)}
+.mind.expired{border-left-color:var(--muted)!important}
+.mind.expired .mlegs,.mind.expired .mhow,.mind.expired .mrange,
+.mind.expired .mshift,.mind.expired .mnote,.mind.expired .mq{
+  filter:grayscale(1);opacity:.32}
+.mind.expired .mexp{display:block}
+.zones{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin:0 0 14px}
+@media(max-width:640px){.zones{grid-template-columns:1fr}}
+.zone{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:11px 13px}
+.zone.res{border-left:3px solid var(--call)} .zone.sup{border-left:3px solid var(--put)}
+.zh{font-size:12px;font-weight:700;margin-bottom:7px}
+.zh small{font-weight:500;color:var(--muted);font-size:10.5px;margin-left:7px}
+.zrow{display:flex;align-items:baseline;gap:8px;font-size:12px;padding:3px 0;flex-wrap:wrap}
+.zrow b{font-size:14px;min-width:58px}
+.zm{color:var(--ink);min-width:56px} .zv,.zr,.zt{color:var(--muted);font-size:11px}
+.zr.sell,.zt.sell{color:var(--put)} .zr.buy,.zt.buy{color:var(--call)}
+.zt{margin-left:auto;font-weight:600}
+.zrow.thin .zm{color:var(--muted);font-size:11.5px}
+.zn{color:var(--muted);font-size:10.5px;margin-top:7px;padding-top:7px;border-top:1px solid var(--hair)}
+.tblwrap{overflow-x:auto;background:var(--panel);border:1px solid var(--line);border-radius:12px}
+table{border-collapse:collapse;width:100%;font-size:12.5px;min-width:960px}
+/* 手機版：表格不再強制 960px 寬，字與間距縮小，少橫滑一點 */
+@media(max-width:640px){
+  td.amt .amtnum{display:none} td.amt .amtsm, th .amtsm{display:block}
+  table{min-width:0;font-size:11px}
+  thead th{padding:6px 3px;font-size:9.5px;letter-spacing:0}
+  .drow td{padding:3px 3px}
+  .chg{font-size:10px}
+  /* 履約價欄維持原本寬度與字級（未縮小前約 84px、12.5px），只縮兩側欄位。
+     不能用 width：表格比螢幕寬時各欄會被壓到內容最小寬，width 會被忽略；
+     左右留白算在最小寬裡，才撐得住。 */
+  .drow td.strike{font-size:12.5px;padding-left:20px;padding-right:20px}
+}
+thead th{position:sticky;top:0;background:var(--panel);color:var(--muted);font-weight:600;
+  font-size:10.5px;letter-spacing:.3px;padding:8px 7px;border-bottom:2px solid var(--line)}
+.grp-c{color:var(--call)} .grp-p{color:var(--put)}
+.drow td{padding:4px 7px;border-bottom:1px solid var(--hair);text-align:right;white-space:nowrap}
+.strike{text-align:center!important;font-weight:700;background:var(--bg);
+  border-left:1px solid var(--line);border-right:1px solid var(--line)}
+.be,.oi,.def{color:var(--muted)}
+.basis{color:var(--muted);font-size:11.5px;line-height:1.7;margin:0 2px 8px} .basis b{color:var(--ink)}
+.thsm{display:block;font-size:9px;font-weight:500;opacity:.8} .px{font-weight:600}
+.chg{font-size:11px;color:var(--muted)}
+.chg.sell{color:var(--put);font-weight:700;background:rgba(30,160,70,.13)}
+.chg.buy{color:var(--call);font-weight:700;background:rgba(214,52,52,.13)}
+/* 2026-11-17 起桌機也改用「萬」（原本只有手機版），金額欄位數太多讀不出量級 */
+.amt .amtnum{display:none} .px .pxnum{display:block}
+.amtsm{display:block}
+.delta{display:none;font-size:9.5px;font-weight:700;line-height:1.4;margin-top:1px;
+  padding:0 4px;border-radius:3px;background:rgba(0,0,0,.34);letter-spacing:.2px}
+.delta.plain{background:transparent;padding:0}
+.delta.plain.up{color:var(--call)} .delta.plain.down{color:var(--put)}
+.delta.up{color:#ff6a5c} .delta.down{color:#37d67a}
+.e{background:transparent!important}
+/* 夜盤附的日盤收盤金額欄：字色淡一階、內側加一條分隔線，表示這欄不是夜盤即時 */
+td.oiamt{color:var(--ink)}
+/* 未平倉金額底下的增減小字：紅＝增加、綠＝減少；墊一塊面板色小底，深紅/深綠格子上也讀得到 */
+.oichg{display:block;width:fit-content;margin:2px 0 0 auto;font-size:10px;font-weight:700;line-height:1.35;
+  padding:0 4px;border-radius:3px;background:var(--panel)}
+.oichg.up{color:var(--call)} .oichg.down{color:var(--put)}
+.drow.atm .strike{background:var(--atm)}
+.drow.atm td{border-top:1px solid #d8b24a;border-bottom:1px solid #d8b24a}
+.note{color:var(--muted);font-size:11.5px;line-height:1.75;margin-top:16px}
+.note b{color:var(--ink)}
+.legend{display:flex;gap:16px;flex-wrap:wrap;font-size:11.5px;color:var(--muted);margin:10px 2px 0}
+.sw{display:inline-block;width:24px;height:10px;border-radius:2px;vertical-align:middle;margin-right:5px}
+.tabs{display:flex;gap:8px;flex-wrap:wrap;margin:16px 0 10px}
+.tab{appearance:none;font:inherit;font-size:13px;font-weight:700;cursor:pointer;
+  background:var(--panel);color:var(--muted);border:1px solid var(--line);
+  border-radius:999px;padding:8px 16px;line-height:1.3}
+.tab small{display:block;font-size:10.5px;font-weight:500;opacity:.8;margin-top:2px}
+.tab.on{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+.sub-tab{margin:0 2px 4px}
+.panel{display:none} .panel.on{display:block}
+/* 盤中多空空間卡：全市場家數的三條線。放在分頁之外，因為它跟到期別無關，
+   三個分頁看到的都該是同一份。內容全由 DUOKONG_JS 在瀏覽器端填（見 4.9 節註解）。 */
+.dk{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--muted);
+  border-radius:10px;padding:12px 14px;margin:12px 0 4px}
+.dk.up{border-left-color:var(--call)} .dk.down{border-left-color:var(--put)}
+.dkh{font-size:12px;font-weight:700;color:var(--muted);letter-spacing:.4px;
+  display:flex;align-items:baseline;flex-wrap:wrap;gap:0 8px}
+.dkh small{font-size:10px;font-weight:500;opacity:.75;margin-left:-4px}
+.dkq{color:var(--ink);font-size:17px;letter-spacing:0}
+.dk.up .dkq{color:var(--call)} .dk.down .dkq{color:var(--put)}
+.dkd{font-size:10.5px;font-weight:500;color:var(--muted)}
+.dka{margin-left:auto;font-size:11px;font-weight:600;color:var(--muted);text-decoration:none;
+  border:1px solid var(--line);border-radius:999px;padding:2px 9px;white-space:nowrap}
+.dka:hover{color:var(--ink);border-color:var(--muted)}
+/* 圖高度寫死 152px：手機直放時再高就把下面的表格擠出畫面外，
+   而這張卡的角色是「一眼看今天的骨架」，不是拿來細看的主圖。 */
+.dkwrap{position:relative;height:152px;margin:8px 0 2px}
+#dkcv{width:100%;height:152px;display:block;touch-action:manipulation}
+.dkfact{font-size:11.5px;color:var(--muted);line-height:1.7;min-height:20px}
+.dkfact b{color:var(--ink);font-weight:600}
+/* 數字列刻意不用頁面上那組 .kpi 方塊：這張卡是最上面的附掛讀數，
+   五個方塊在手機上要吃掉三列高度，會把主角（T 字表）擠出第一屏。 */
+.dkkpis{display:flex;flex-wrap:wrap;gap:5px 18px;margin:9px 0 0;
+  padding-top:8px;border-top:1px solid var(--hair)}
+.dks{display:flex;align-items:baseline;gap:6px}
+.dks .l{font-size:10.5px;color:var(--muted)}
+.dks b{font-size:15px;font-weight:700}
+.dks b.up{color:var(--call)} .dks b.down{color:var(--put)}
+.dks b.dim{color:var(--ink);font-weight:600;font-size:14px}
+.dknote{color:var(--muted);font-size:10.5px;margin-top:9px;padding-top:7px;
+  border-top:1px solid var(--hair);line-height:1.65}
+</style>
+<div class="wrap" data-gen="2026-11-21 06:35:08" data-epoch="1795214108">
+<h1>台指選擇權即時 T 字報價</h1>
+<div class="sub"><span class="dot"></span>非交易（顯示最後成交價）　·　標的 33,919（TXF近月(非交易)）　·　產生 2026-11-21 06:35:08　·　<span id="age">—</span></div>
+<div class="dk" id="dk" hidden>
+  <div class="dkh">盤中多空空間<small>全市場家數</small>
+    <span class="dkq" id="dkq">—</span>
+    <span class="dkd" id="dkd"></span>
+    <a class="dka" href="https://duokong.emma198574.workers.dev" target="_blank" rel="noopener">完整判讀 ↗</a>
+  </div>
+  <div class="dkwrap"><canvas id="dkcv"></canvas></div>
+  <div class="dkfact" id="dkfact"></div>
+  <div class="dkkpis" id="dkkpi"></div>
+  <div class="dknote">紅綠棒＝<b>多空空間</b>（上漲家數 − 下跌家數），
+    黃線＝<b>快動能</b>（減前 30 分鐘均值），藍線＝<b>主力錢</b>（成交額前 100 大的買賣方向，
+    右軸 −1~+1）。<b>家數在零軸下、藍線在零軸上</b>＝個股在跌但大錢在買。
+    每 5 分鐘一根，與本頁的選擇權報價各自獨立更新。<b>未經回測，不是進出場訊號。</b></div>
+</div>
+<div class="tabs">
+  <button class="tab" data-tab="wed">週三結算<small>11/25 W4</small></button>
+  <button class="tab" data-tab="fri">週五結算<small>11/27 F4</small></button>
+  <button class="tab" data-tab="wed2">下週三結算<small>12/02 W1</small></button>
+  <button class="tab" data-tab="mth">隔月結算<small>12/16 12月選</small></button>
+</div>
+<section class="panel" data-panel="wed">
+<div class="sub sub-tab">11/25 到期（W4）　·　⚠ 非今日行情　最後成交 11/20 04:59:58　·　本到期別成交 84,876 口</div>
+<div class="kpis">
+  <div class="kpi call"><div class="l">CALL 成交量</div><div class="v">2,014<small> 口</small></div></div>
+  <div class="kpi put"><div class="l">PUT 成交量</div><div class="v">16,280<small> 口</small></div></div>
+  <div class="kpi"><div class="l">Put/Call 量比</div><div class="v">8.08</div></div>
+  <div class="kpi"><div class="l">P/C 未平倉比</div><div class="v">0.13</div></div>
+  <div class="kpi"><div class="l">價平</div><div class="v">34,500</div></div>
+</div>
+<div class="mind flat">
+  <div class="mh">莊家意圖<span class="mq">觀望</span></div>
+  <div class="mlegs">
+    <div class="leg"><span class="lgl">標的之上・買權</span><b class="mid">中性</b><span class="lgn">+0.1pt，未達 ±2.0 門檻</span></div>
+    <div class="leg"><span class="lgl">標的之下・賣權</span><span class="lgn">量能／樣本不足（0 口 / 0 檔），不判定</span></div>
+  </div>
+  <div class="mhow">買權側中性、賣權側量能／樣本不足，四象限不成立。莊家今天沒有表態，這種盤最容易兩面被巴 —— 先不做。</div>
+  <div class="mrange">台指參考區間　<b>—</b> ～ <b>35,000<small>盤中</small></b></div><div class="mshift">買權陣地下移 300 點（偏空）</div>
+  <div class="mnote">失效條件：等任一側出現明確的綠（築牆）或粉（追價）再看。</div>
+  <div class="mexp">⚠ 資料已超過 15 分鐘，方向判讀不可用 —— 到 Actions 手動 Run 一次再看</div>
+</div>
+<div class="zones">
+  <div class="zone res">
+    <div class="zh">盤中壓力區<small>標的之上・買權今日成交口數</small></div>
+    <div class="zrow"><b>35,000</b><span class="zm">412 口</span><span class="zv">1,360 萬</span><span class="zr ">-56%</span><span class="zt ">中性</span></div>
+<div class="zrow"><b>35,200</b><span class="zm">308 口</span><span class="zv">970 萬</span><span class="zr ">-55%</span><span class="zt ">中性</span></div>
+<div class="zrow"><b>34,500</b><span class="zm">248 口</span><span class="zv">1,029 萬</span><span class="zr ">-55%</span><span class="zt ">中性</span></div>
+    <div class="zn">昨日 買權 OI 牆 35,300　·　盤中重心下移 300 點</div>
+  </div>
+  <div class="zone sup">
+    <div class="zh">盤中支撐區<small>標的之下・賣權今日成交口數</small></div>
+    <div class="zrow thin"><span class="zm">量能不足（此側價外合計 0 口），不做撐壓判讀</span></div>
+    <div class="zn">昨日 賣權 OI 牆：視窗內無資料</div>
+  </div>
+</div>
+<div class="basis">防守＝11/20 日盤收盤：台指期 <b>35,875</b> − 合成 35,770 ＝ 價差 <b>+105</b> 點（一天一換，夜盤不跳）</div>
+<div class="tblwrap">
+<table>
+<thead><tr>
+  <th class="grp-c">CALL 金額<span class="amtsm">(萬)</span></th><th class="grp-c">口數</th><th class="grp-c">未平倉<br>金額</th><th class="grp-c">OI</th><th class="grp-c">今日</th><th class="grp-c">權利金</th><th class="grp-c">損益兩平</th><th class="grp-c">防守<span class="thsm">期貨點位·日盤收盤</span></th>
+  <th>履約價</th>
+  <th class="grp-p">防守<span class="thsm">期貨點位·日盤收盤</span></th><th class="grp-p">損益兩平</th><th class="grp-p">權利金</th><th class="grp-p">今日</th><th class="grp-p">OI</th><th class="grp-p">未平倉<br>金額</th><th class="grp-p">口數</th><th class="grp-p">PUT 金額<span class="amtsm">(萬)</span></th>
+</tr></thead>
+<tbody>
+<tr class="drow atm"><td class="amt" data-tab="wed" data-side="C" data-k="34500" data-amt="10292000" style="background:rgb(219,80,80)"><span class="amtnum">10,292,000</span><span class="amtsm">1,029</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 60.2%,transparent 60.2% 100%)">248</td><td class="amt oiamt" style="background:rgba(214,52,52,0.06)">240萬<span class="oichg up" title="ΔOI +28 口 × 收盤 1720 × 50">+240萬</span></td><td class="oi">28</td><td class="chg " title="今日 -55%，對照價外同儕超額 +2pt → 中性">-55%</td><td class="px" data-tab="wed" data-side="C" data-k="34500" data-px="830"><span class="pxnum">830</span><span class="delta plain"></span></td><td class="be">35,330</td><td class="def" title="34,500 ＋ 收盤 1720 ＋ 價差 +105（11/20 日盤收盤）">36,325</td><td class="strike">34,500</td><td class="def" title="34,500 − 收盤 565 ＋ 價差 +105（11/20 日盤收盤）">34,040</td><td class="be">33,000</td><td class="px" data-tab="wed" data-side="P" data-k="34500" data-px="1500"><span class="pxnum">1500</span><span class="delta plain"></span></td><td class="chg " title="今日 +165%，對照價內同儕超額 -1pt → 中性">+165%</td><td class="oi">609</td><td class="amt oiamt" style="background:rgba(30,160,70,0.60)">1720萬<span class="oichg up" title="ΔOI +609 口 × 收盤 565 × 50">+1720萬</span></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 100.0%,transparent 100.0% 100%)">9,669</td><td class="amt" data-tab="wed" data-side="P" data-k="34500" data-amt="725175000" style="background:rgb(30,160,70)"><span class="amtnum">725,175,000</span><span class="amtsm">72,518</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="34600" data-amt="5986000" style="background:rgb(228,125,125)"><span class="amtnum">5,986,000</span><span class="amtsm">599</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 39.8%,transparent 39.8% 100%)">164</td><td class="amt oiamt" style="background:rgba(214,52,52,0.03)">65萬<span class="oichg up" title="ΔOI +8 口 × 收盤 1630 × 50">+65萬</span></td><td class="oi">8</td><td class="chg " title="今日 -59%，對照價外同儕超額 -2pt → 中性">-59%</td><td class="px" data-tab="wed" data-side="C" data-k="34600" data-px="730"><span class="pxnum">730</span><span class="delta plain"></span></td><td class="be">35,330</td><td class="def" title="34,600 ＋ 收盤 1630 ＋ 價差 +105（11/20 日盤收盤）">36,335</td><td class="strike">34,600</td><td class="def" title="34,600 − 收盤 615 ＋ 價差 +105（11/20 日盤收盤）">34,090</td><td class="be">32,990</td><td class="px" data-tab="wed" data-side="P" data-k="34600" data-px="1610"><span class="pxnum">1610</span><span class="delta plain"></span></td><td class="chg " title="今日 +171%，對照價內同儕超額 +4pt → 中性">+171%</td><td class="oi">74</td><td class="amt oiamt" style="background:rgba(30,160,70,0.20)">227萬<span class="oichg up" title="ΔOI +74 口 × 收盤 615 × 50">+227萬</span></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 12.0%,transparent 12.0% 100%)">1,158</td><td class="amt" data-tab="wed" data-side="P" data-k="34600" data-amt="93219000" style="background:rgb(182,224,195)"><span class="amtnum">93,219,000</span><span class="amtsm">9,322</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="34700" data-amt="2351250" style="background:rgb(239,177,177)"><span class="amtnum">2,351,250</span><span class="amtsm">235</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 13.3%,transparent 13.3% 100%)">55</td><td class="amt oiamt" style="background:rgba(214,52,52,0.03)">57萬<span class="oichg up" title="ΔOI +7 口 × 收盤 1650 × 50">+57萬</span></td><td class="oi">7</td><td class="chg buy" title="今日 -50%，對照價外同儕超額 +7pt → 買方追價">-50%</td><td class="px" data-tab="wed" data-side="C" data-k="34700" data-px="855"><span class="pxnum">855</span><span class="delta plain"></span></td><td class="be">35,555</td><td class="def" title="34,700 ＋ 收盤 1650 ＋ 價差 +105（11/20 日盤收盤）">36,455</td><td class="strike">34,700</td><td class="def" title="34,700 − 收盤 665 ＋ 價差 +105（11/20 日盤收盤）">34,140</td><td class="be">33,000</td><td class="px" data-tab="wed" data-side="P" data-k="34700" data-px="1700"><span class="pxnum">1700</span><span class="delta plain"></span></td><td class="chg " title="今日 +168%，對照價內同儕超額 +1pt → 中性">+168%</td><td class="oi">112</td><td class="amt oiamt" style="background:rgba(30,160,70,0.26)">372萬<span class="oichg up" title="ΔOI +112 口 × 收盤 665 × 50">+372萬</span></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 8.7%,transparent 8.7% 100%)">842</td><td class="amt" data-tab="wed" data-side="P" data-k="34700" data-amt="71570000" style="background:rgb(192,228,203)"><span class="amtnum">71,570,000</span><span class="amtsm">7,157</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="34800" data-amt="5143000" style="background:rgb(230,136,136)"><span class="amtnum">5,143,000</span><span class="amtsm">514</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 35.9%,transparent 35.9% 100%)">148</td><td class="amt oiamt" style="background:rgba(214,52,52,0.05)">202萬<span class="oichg up" title="ΔOI +26 口 × 收盤 1560 × 50">+202萬</span></td><td class="oi">26</td><td class="chg " title="今日 -57%，對照價外同儕超額 -1pt → 中性">-57%</td><td class="px" data-tab="wed" data-side="C" data-k="34800" data-px="695"><span class="pxnum">695</span><span class="delta plain"></span></td><td class="be">35,495</td><td class="def" title="34,800 ＋ 收盤 1560 ＋ 價差 +105（11/20 日盤收盤）">36,465</td><td class="strike">34,800</td><td class="def" title="34,800 − 收盤 660 ＋ 價差 +105（11/20 日盤收盤）">34,245</td><td class="be">32,780</td><td class="px" data-tab="wed" data-side="P" data-k="34800" data-px="2020"><span class="pxnum">2020</span><span class="delta plain"></span></td><td class="chg buy" title="今日 +206%，對照價內同儕超額 +39pt → 買方追價">+206%</td><td class="oi">43</td><td class="amt oiamt" style="background:rgba(30,160,70,0.15)">141萬<span class="oichg up" title="ΔOI +43 口 × 收盤 660 × 50">+141萬</span></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 6.6%,transparent 6.6% 100%)">635</td><td class="amt" data-tab="wed" data-side="P" data-k="34800" data-amt="64135000" style="background:rgb(195,229,206)"><span class="amtnum">64,135,000</span><span class="amtsm">6,414</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="34900" data-amt="3872000" style="background:rgb(234,153,153)"><span class="amtnum">3,872,000</span><span class="amtsm">387</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 29.4%,transparent 29.4% 100%)">121</td><td class="amt oiamt" style="background:rgba(214,52,52,0.58)">15120萬<span class="oichg up" title="ΔOI +1,951 口 × 收盤 1550 × 50">+15120萬</span></td><td class="oi">1,951</td><td class="chg " title="今日 -59%，對照價外同儕超額 -3pt → 中性">-59%</td><td class="px" data-tab="wed" data-side="C" data-k="34900" data-px="640"><span class="pxnum">640</span><span class="delta plain"></span></td><td class="be">35,540</td><td class="def" title="34,900 ＋ 收盤 1550 ＋ 價差 +105（11/20 日盤收盤）">36,555</td><td class="strike">34,900</td><td class="def" title="34,900 − 收盤 685 ＋ 價差 +105（11/20 日盤收盤）">34,320</td><td class="be">33,250</td><td class="px" data-tab="wed" data-side="P" data-k="34900" data-px="1650"><span class="pxnum">1650</span><span class="delta plain"></span></td><td class="chg " title="今日 +134%，對照價內同儕超額 -33pt → 中性">+134%</td><td class="oi">58</td><td class="amt oiamt" style="background:rgba(30,160,70,0.18)">198萬<span class="oichg up" title="ΔOI +58 口 × 收盤 685 × 50">+198萬</span></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 6.0%,transparent 6.0% 100%)">582</td><td class="amt" data-tab="wed" data-side="P" data-k="34900" data-amt="48015000" style="background:rgb(204,233,213)"><span class="amtnum">48,015,000</span><span class="amtsm">4,802</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="35000" data-amt="13596000" style="background:rgb(214,52,52)"><span class="amtnum">13,596,000</span><span class="amtsm">1,360</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 100.0%,transparent 100.0% 100%)">412</td><td class="amt oiamt" style="background:rgba(214,52,52,0.57)">14614萬<span class="oichg up" title="ΔOI +2,002 口 × 收盤 1460 × 50">+14614萬</span></td><td class="oi">2,002</td><td class="chg " title="今日 -56%，對照價外同儕超額 +1pt → 中性">-56%</td><td class="px" data-tab="wed" data-side="C" data-k="35000" data-px="660"><span class="pxnum">660</span><span class="delta plain"></span></td><td class="be">35,660</td><td class="def" title="35,000 ＋ 收盤 1460 ＋ 價差 +105（11/20 日盤收盤）">36,565</td><td class="strike">35,000</td><td class="def" title="35,000 − 收盤 785 ＋ 價差 +105（11/20 日盤收盤）">34,320</td><td class="be">33,270</td><td class="px" data-tab="wed" data-side="P" data-k="35000" data-px="1730"><span class="pxnum">1730</span><span class="delta plain"></span></td><td class="chg " title="今日 +134%，對照價內同儕超額 -33pt → 中性">+134%</td><td class="oi">238</td><td class="amt oiamt" style="background:rgba(30,160,70,0.43)">934萬<span class="oichg up" title="ΔOI +238 口 × 收盤 785 × 50">+934萬</span></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 22.9%,transparent 22.9% 100%)">2,212</td><td class="amt" data-tab="wed" data-side="P" data-k="35000" data-amt="191338000" style="background:rgb(146,209,166)"><span class="amtnum">191,338,000</span><span class="amtsm">19,134</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="35100" data-amt="4197500" style="background:rgb(233,148,148)"><span class="amtnum">4,197,500</span><span class="amtsm">420</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 35.4%,transparent 35.4% 100%)">146</td><td class="amt oiamt" style="background:rgba(214,52,52,0.08)">420萬<span class="oichg up" title="ΔOI +58 口 × 收盤 1450 × 50">+420萬</span></td><td class="oi">58</td><td class="chg " title="今日 -60%，對照價外同儕超額 -4pt → 中性">-60%</td><td class="px" data-tab="wed" data-side="C" data-k="35100" data-px="575"><span class="pxnum">575</span><span class="delta plain"></span></td><td class="be">35,675</td><td class="def" title="35,100 ＋ 收盤 1450 ＋ 價差 +105（11/20 日盤收盤）">36,655</td><td class="strike">35,100</td><td class="def" title="35,100 − 收盤 820 ＋ 價差 +105（11/20 日盤收盤）">34,385</td><td class="be">32,950</td><td class="px" data-tab="wed" data-side="P" data-k="35100" data-px="2150"><span class="pxnum">2150</span><span class="delta plain"></span></td><td class="chg " title="今日 +176%，對照價內同儕超額 +9pt → 中性">+176%</td><td class="oi">18</td><td class="amt oiamt" style="background:rgba(30,160,70,0.11)">73萬<span class="oichg up" title="ΔOI +18 口 × 收盤 820 × 50">+73萬</span></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 3.0%,transparent 3.0% 100%)">290</td><td class="amt" data-tab="wed" data-side="P" data-k="35100" data-amt="31175000" style="background:rgb(215,238,222)"><span class="amtnum">31,175,000</span><span class="amtsm">3,118</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="35200" data-amt="9702000" style="background:rgb(220,86,86)"><span class="amtnum">9,702,000</span><span class="amtsm">970</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 74.8%,transparent 74.8% 100%)">308</td><td class="amt oiamt" style="background:rgba(214,52,52,0.56)">13900萬<span class="oichg up" title="ΔOI +2,000 口 × 收盤 1390 × 50">+13900萬</span></td><td class="oi">2,000</td><td class="chg " title="今日 -55%，對照價外同儕超額 +2pt → 中性">-55%</td><td class="px" data-tab="wed" data-side="C" data-k="35200" data-px="630"><span class="pxnum">630</span><span class="delta plain"></span></td><td class="be">35,830</td><td class="def" title="35,200 ＋ 收盤 1390 ＋ 價差 +105（11/20 日盤收盤）">36,695</td><td class="strike">35,200</td><td class="def" title="35,200 − 收盤 845 ＋ 價差 +105（11/20 日盤收盤）">34,460</td><td class="be">32,910</td><td class="px" data-tab="wed" data-side="P" data-k="35200" data-px="2290"><span class="pxnum">2290</span><span class="delta plain"></span></td><td class="chg " title="今日 +179%，對照價內同儕超額 +13pt → 中性">+179%</td><td class="oi">29</td><td class="amt oiamt" style="background:rgba(30,160,70,0.14)">122萬<span class="oichg up" title="ΔOI +29 口 × 收盤 845 × 50">+122萬</span></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 2.8%,transparent 2.8% 100%)">266</td><td class="amt" data-tab="wed" data-side="P" data-k="35200" data-amt="30457000" style="background:rgb(215,238,222)"><span class="amtnum">30,457,000</span><span class="amtsm">3,046</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="35300" data-amt="7164750" style="background:rgb(226,112,112)"><span class="amtnum">7,164,750</span><span class="amtsm">716</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 56.6%,transparent 56.6% 100%)">233</td><td class="amt oiamt" style="background:rgba(214,52,52,0.60)">16000萬<span class="oichg up" title="ΔOI +2,500 口 × 收盤 1280 × 50">+16000萬</span></td><td class="oi">2,500</td><td class="chg " title="今日 -54%，對照價外同儕超額 +3pt → 中性">-54%</td><td class="px" data-tab="wed" data-side="C" data-k="35300" data-px="615"><span class="pxnum">615</span><span class="delta plain"></span></td><td class="be">35,915</td><td class="def" title="35,300 ＋ 收盤 1280 ＋ 價差 +105（11/20 日盤收盤）">36,685</td><td class="strike">35,300</td><td class="def" title="35,300 − 收盤 860 ＋ 價差 +105（11/20 日盤收盤）">34,545</td><td class="be">33,220</td><td class="px" data-tab="wed" data-side="P" data-k="35300" data-px="2080"><span class="pxnum">2080</span><span class="delta plain"></span></td><td class="chg " title="今日 +142%，對照價內同儕超額 -25pt → 中性">+142%</td><td class="oi">28</td><td class="amt oiamt" style="background:rgba(30,160,70,0.14)">120萬<span class="oichg up" title="ΔOI +28 口 × 收盤 860 × 50">+120萬</span></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 2.7%,transparent 2.7% 100%)">263</td><td class="amt" data-tab="wed" data-side="P" data-k="35300" data-amt="27352000" style="background:rgb(217,239,224)"><span class="amtnum">27,352,000</span><span class="amtsm">2,735</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="wed" data-side="C" data-k="35400" data-amt="4340750" style="background:rgb(233,146,146)"><span class="amtnum">4,340,750</span><span class="amtsm">434</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 43.4%,transparent 43.4% 100%)">179</td><td class="amt oiamt" style="background:rgba(214,52,52,0.05)">162萬<span class="oichg up" title="ΔOI +26 口 × 收盤 1250 × 50">+162萬</span></td><td class="oi">26</td><td class="chg sell" title="今日 -62%，對照價外同儕超額 -5pt → 賣方築牆">-62%</td><td class="px" data-tab="wed" data-side="C" data-k="35400" data-px="485"><span class="pxnum">485</span><span class="delta plain"></span></td><td class="be">35,885</td><td class="def" title="35,400 ＋ 收盤 1250 ＋ 價差 +105（11/20 日盤收盤）">36,755</td><td class="strike">35,400</td><td class="def" title="35,400 − 收盤 920 ＋ 價差 +105（11/20 日盤收盤）">34,585</td><td class="be">33,260</td><td class="px" data-tab="wed" data-side="P" data-k="35400" data-px="2140"><span class="pxnum">2140</span><span class="delta plain"></span></td><td class="chg " title="今日 +133%，對照價內同儕超額 -34pt → 中性">+133%</td><td class="oi">23</td><td class="amt oiamt" style="background:rgba(30,160,70,0.13)">105萬<span class="oichg up" title="ΔOI +23 口 × 收盤 920 × 50">+105萬</span></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 3.8%,transparent 3.8% 100%)">363</td><td class="amt" data-tab="wed" data-side="P" data-k="35400" data-amt="38841000" style="background:rgb(210,236,218)"><span class="amtnum">38,841,000</span><span class="amtsm">3,884</span><span class="delta"></span></td></tr>
+</tbody>
+</table>
+</div>
+<div class="note">
+  <b>本頁重點</b>：買權最大量 35,000（412 口）、賣權最大量 34,500（9,669 口）。未平倉牆（11/20 收盤・11/25 到期）：買權壓力 <b>43,000</b>、賣權支撐 <b>39,500</b>、Put/Call 未平倉比 <b>0.13</b>。
+</div>
+</section>
+<section class="panel" data-panel="fri">
+<div class="sub sub-tab">11/27 到期（F4）　·　⚠ 非今日行情　最後成交 11/20 04:59:48　·　本到期別成交 2,332 口</div>
+<div class="kpis">
+  <div class="kpi call"><div class="l">CALL 成交量</div><div class="v">53<small> 口</small></div></div>
+  <div class="kpi put"><div class="l">PUT 成交量</div><div class="v">428<small> 口</small></div></div>
+  <div class="kpi"><div class="l">Put/Call 量比</div><div class="v">8.08</div></div>
+  <div class="kpi"><div class="l">P/C 未平倉比</div><div class="v">0.12</div></div>
+  <div class="kpi"><div class="l">價平</div><div class="v">35,000</div></div>
+</div>
+<div class="mind flat">
+  <div class="mh">莊家意圖<span class="mq">觀望</span></div>
+  <div class="mlegs">
+    <div class="leg"><span class="lgl">標的之上・買權</span><span class="lgn">量能／樣本不足（0 口 / 0 檔），不判定</span></div>
+    <div class="leg"><span class="lgl">標的之下・賣權</span><span class="lgn">量能／樣本不足（0 口 / 0 檔），不判定</span></div>
+  </div>
+  <div class="mhow">買權側量能／樣本不足、賣權側量能／樣本不足，四象限不成立。莊家今天沒有表態，這種盤最容易兩面被巴 —— 先不做。</div>
+  <div class="mrange">台指參考區間　<b>—</b> ～ <b>35,000<small>昨日OI</small></b></div>
+  <div class="mnote">失效條件：等任一側出現明確的綠（築牆）或粉（追價）再看。</div>
+  <div class="mexp">⚠ 資料已超過 15 分鐘，方向判讀不可用 —— 到 Actions 手動 Run 一次再看</div>
+</div>
+<div class="zones">
+  <div class="zone res">
+    <div class="zh">盤中壓力區<small>標的之上・買權今日成交口數</small></div>
+    <div class="zrow thin"><span class="zm">量能不足（此側價外合計 53 口），不做撐壓判讀</span></div>
+    <div class="zn">昨日 買權 OI 牆 35,000</div>
+  </div>
+  <div class="zone sup">
+    <div class="zh">盤中支撐區<small>標的之下・賣權今日成交口數</small></div>
+    <div class="zrow thin"><span class="zm">量能不足（此側價外合計 0 口），不做撐壓判讀</span></div>
+    <div class="zn">昨日 賣權 OI 牆：視窗內無資料</div>
+  </div>
+</div>
+<div class="basis">防守＝11/20 日盤收盤：台指期 <b>35,875</b> − 合成 35,680 ＝ 價差 <b>+195</b> 點（一天一換，夜盤不跳）</div>
+<div class="tblwrap">
+<table>
+<thead><tr>
+  <th class="grp-c">CALL 金額<span class="amtsm">(萬)</span></th><th class="grp-c">口數</th><th class="grp-c">未平倉<br>金額</th><th class="grp-c">OI</th><th class="grp-c">今日</th><th class="grp-c">權利金</th><th class="grp-c">損益兩平</th><th class="grp-c">防守<span class="thsm">期貨點位·日盤收盤</span></th>
+  <th>履約價</th>
+  <th class="grp-p">防守<span class="thsm">期貨點位·日盤收盤</span></th><th class="grp-p">損益兩平</th><th class="grp-p">權利金</th><th class="grp-p">今日</th><th class="grp-p">OI</th><th class="grp-p">未平倉<br>金額</th><th class="grp-p">口數</th><th class="grp-p">PUT 金額<span class="amtsm">(萬)</span></th>
+</tr></thead>
+<tbody>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="amt oiamt" style="background:rgba(214,52,52,0.02)">46萬<span class="oichg up" title="ΔOI +5 口 × 收盤 1850 × 50">+46萬</span></td><td class="oi">5</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="def" title="34,500 ＋ 收盤 1850 ＋ 價差 +195（11/20 日盤收盤）">36,545</td><td class="strike">34,500</td><td class="def" title="34,500 − 收盤 695 ＋ 價差 +195（11/20 日盤收盤）">34,000</td><td class="be">32,810</td><td class="px" data-tab="fri" data-side="P" data-k="34500" data-px="1690"><span class="pxnum">1690</span><span class="delta plain"></span></td><td class="chg " title="今日 +135%（樣本不足或無成交，不判定）">+135%</td><td class="oi">248</td><td class="amt oiamt" style="background:rgba(30,160,70,0.60)">861萬<span class="oichg up" title="ΔOI +248 口 × 收盤 695 × 50">+861萬</span></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 100.0%,transparent 100.0% 100%)">210</td><td class="amt" data-tab="fri" data-side="P" data-k="34500" data-amt="17745000" style="background:rgb(30,160,70)"><span class="amtnum">17,745,000</span><span class="amtsm">1,774</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="amt oiamt" style="background:rgba(214,52,52,0.01)">17萬<span class="oichg up" title="ΔOI +2 口 × 收盤 1780 × 50">+17萬</span></td><td class="oi">2</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="def" title="34,600 ＋ 收盤 1780 ＋ 價差 +195（11/20 日盤收盤）">36,575</td><td class="strike">34,600</td><td class="def" title="34,600 − 收盤 750 ＋ 價差 +195（11/20 日盤收盤）">34,045</td><td class="be">33,620</td><td class="px" data-tab="fri" data-side="P" data-k="34600" data-px="980"><span class="pxnum">980</span><span class="delta plain"></span></td><td class="chg " title="今日 +31%（樣本不足或無成交，不判定）">+31%</td><td class="oi">155</td><td class="amt oiamt" style="background:rgba(30,160,70,0.48)">581萬<span class="oichg up" title="ΔOI +155 口 × 收盤 750 × 50">+581萬</span></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 12.4%,transparent 12.4% 100%)">26</td><td class="amt" data-tab="fri" data-side="P" data-k="34600" data-amt="1274000" style="background:rgb(202,232,211)"><span class="amtnum">1,274,000</span><span class="amtsm">127</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="amt oiamt"></td><td class="oi"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="def" title="34,700 ＋ 收盤 1770 ＋ 價差 +195（11/20 日盤收盤）">36,665</td><td class="strike">34,700</td><td class="def" title="34,700 − 收盤 800 ＋ 價差 +195（11/20 日盤收盤）">34,095</td><td class="be">33,660</td><td class="px" data-tab="fri" data-side="P" data-k="34700" data-px="1040"><span class="pxnum">1040</span><span class="delta plain"></span></td><td class="chg " title="今日 +30%（樣本不足或無成交，不判定）">+30%</td><td class="oi">65</td><td class="amt oiamt" style="background:rgba(30,160,70,0.31)">260萬<span class="oichg up" title="ΔOI +65 口 × 收盤 800 × 50">+260萬</span></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 4.3%,transparent 4.3% 100%)">9</td><td class="amt" data-tab="fri" data-side="P" data-k="34700" data-amt="468000" style="background:rgb(224,242,229)"><span class="amtnum">468,000</span><span class="amtsm">46.8</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="amt oiamt" style="background:rgba(214,52,52,0.22)">3403萬<span class="oichg up" title="ΔOI +415 口 × 收盤 1640 × 50">+3403萬</span></td><td class="oi">415</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="def" title="34,800 ＋ 收盤 1640 ＋ 價差 +195（11/20 日盤收盤）">36,635</td><td class="strike">34,800</td><td class="def" title="34,800 − 收盤 810 ＋ 價差 +195（11/20 日盤收盤）">34,185</td><td class="be">33,650</td><td class="px" data-tab="fri" data-side="P" data-k="34800" data-px="1150"><span class="pxnum">1150</span><span class="delta plain"></span></td><td class="chg " title="今日 +42%（樣本不足或無成交，不判定）">+42%</td><td class="oi">57</td><td class="amt oiamt" style="background:rgba(30,160,70,0.29)">230萬<span class="oichg up" title="ΔOI +57 口 × 收盤 810 × 50">+230萬</span></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 7.6%,transparent 7.6% 100%)">16</td><td class="amt" data-tab="fri" data-side="P" data-k="34800" data-amt="920000" style="background:rgb(210,236,218)"><span class="amtnum">920,000</span><span class="amtsm">92.0</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="amt oiamt" style="background:rgba(214,52,52,0.15)">1709萬<span class="oichg up" title="ΔOI +211 口 × 收盤 1620 × 50">+1709萬</span></td><td class="oi">211</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="def" title="34,900 ＋ 收盤 1620 ＋ 價差 +195（11/20 日盤收盤）">36,715</td><td class="strike">34,900</td><td class="def" title="34,900 − 收盤 865 ＋ 價差 +195（11/20 日盤收盤）">34,230</td><td class="be">33,710</td><td class="px" data-tab="fri" data-side="P" data-k="34900" data-px="1190"><span class="pxnum">1190</span><span class="delta plain"></span></td><td class="chg " title="今日 +38%（樣本不足或無成交，不判定）">+38%</td><td class="oi">35</td><td class="amt oiamt" style="background:rgba(30,160,70,0.23)">151萬<span class="oichg up" title="ΔOI +35 口 × 收盤 865 × 50">+151萬</span></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 9.5%,transparent 9.5% 100%)">20</td><td class="amt" data-tab="fri" data-side="P" data-k="34900" data-amt="1190000" style="background:rgb(204,233,213)"><span class="amtnum">1,190,000</span><span class="amtsm">119</span><span class="delta"></span></td></tr>
+<tr class="drow atm"><td class="amt" data-tab="fri" data-side="C" data-k="35000" data-amt="135000" style="background:rgb(246,212,212)"><span class="amtnum">135,000</span><span class="amtsm">13.5</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 8.1%,transparent 8.1% 100%)">3</td><td class="amt oiamt" style="background:rgba(214,52,52,0.60)">20580萬<span class="oichg up" title="ΔOI +2,800 口 × 收盤 1470 × 50">+20580萬</span></td><td class="oi">2,800</td><td class="chg " title="今日 -43%（樣本不足或無成交，不判定）">-43%</td><td class="px" data-tab="fri" data-side="C" data-k="35000" data-px="900"><span class="pxnum">900</span><span class="delta plain"></span></td><td class="be">35,900</td><td class="def" title="35,000 ＋ 收盤 1470 ＋ 價差 +195（11/20 日盤收盤）">36,665</td><td class="strike">35,000</td><td class="def" title="35,000 − 收盤 900 ＋ 價差 +195（11/20 日盤收盤）">34,295</td><td class="be">33,600</td><td class="px" data-tab="fri" data-side="P" data-k="35000" data-px="1400"><span class="pxnum">1400</span><span class="delta plain"></span></td><td class="chg " title="今日 +56%（樣本不足或無成交，不判定）">+56%</td><td class="oi">84</td><td class="amt oiamt" style="background:rgba(30,160,70,0.38)">378萬<span class="oichg up" title="ΔOI +84 口 × 收盤 900 × 50">+378萬</span></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 17.6%,transparent 17.6% 100%)">37</td><td class="amt" data-tab="fri" data-side="P" data-k="35000" data-amt="2590000" style="background:rgb(176,222,190)"><span class="amtnum">2,590,000</span><span class="amtsm">259</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="amt oiamt" style="background:rgba(214,52,52,0.11)">972萬<span class="oichg up" title="ΔOI +135 口 × 收盤 1440 × 50">+972萬</span></td><td class="oi">135</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="def" title="35,100 ＋ 收盤 1440 ＋ 價差 +195（11/20 日盤收盤）">36,735</td><td class="strike">35,100</td><td class="def" title="35,100 − 收盤 920 ＋ 價差 +195（11/20 日盤收盤）">34,375</td><td class="be">33,780</td><td class="px" data-tab="fri" data-side="P" data-k="35100" data-px="1320"><span class="pxnum">1320</span><span class="delta plain"></span></td><td class="chg " title="今日 +39%（樣本不足或無成交，不判定）">+39%</td><td class="oi">27</td><td class="amt oiamt" style="background:rgba(30,160,70,0.21)">124萬<span class="oichg up" title="ΔOI +27 口 × 收盤 920 × 50">+124萬</span></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 4.3%,transparent 4.3% 100%)">9</td><td class="amt" data-tab="fri" data-side="P" data-k="35100" data-amt="594000" style="background:rgb(220,240,226)"><span class="amtnum">594,000</span><span class="amtsm">59.4</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="fri" data-side="C" data-k="35200" data-amt="360000" style="background:rgb(240,181,181)"><span class="amtnum">360,000</span><span class="amtsm">36.0</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 16.2%,transparent 16.2% 100%)">6</td><td class="amt oiamt" style="background:rgba(214,52,52,0.56)">18161萬<span class="oichg up" title="ΔOI +2,505 口 × 收盤 1450 × 50">+18161萬</span></td><td class="oi">2,505</td><td class="chg " title="今日 -21%（樣本不足或無成交，不判定）">-21%</td><td class="px" data-tab="fri" data-side="C" data-k="35200" data-px="1200"><span class="pxnum">1200</span><span class="delta plain"></span></td><td class="be">36,400</td><td class="def" title="35,200 ＋ 收盤 1450 ＋ 價差 +195（11/20 日盤收盤）">36,845</td><td class="strike">35,200</td><td class="def" title="35,200 − 收盤 985 ＋ 價差 +195（11/20 日盤收盤）">34,410</td><td class="be">33,950</td><td class="px" data-tab="fri" data-side="P" data-k="35200" data-px="1250"><span class="pxnum">1250</span><span class="delta plain"></span></td><td class="chg " title="今日 +27%（樣本不足或無成交，不判定）">+27%</td><td class="oi">54</td><td class="amt oiamt" style="background:rgba(30,160,70,0.31)">265萬<span class="oichg up" title="ΔOI +54 口 × 收盤 985 × 50">+265萬</span></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 15.2%,transparent 15.2% 100%)">32</td><td class="amt" data-tab="fri" data-side="P" data-k="35200" data-amt="2000000" style="background:rgb(187,226,199)"><span class="amtnum">2,000,000</span><span class="amtsm">200</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="fri" data-side="C" data-k="35300" data-amt="451500" style="background:rgb(238,171,171)"><span class="amtnum">451,500</span><span class="amtsm">45.1</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 18.9%,transparent 18.9% 100%)">7</td><td class="amt oiamt" style="background:rgba(214,52,52,0.10)">810萬<span class="oichg up" title="ΔOI +115 口 × 收盤 1410 × 50">+810萬</span></td><td class="oi">115</td><td class="chg " title="今日 -9%（樣本不足或無成交，不判定）">-9%</td><td class="px" data-tab="fri" data-side="C" data-k="35300" data-px="1290"><span class="pxnum">1290</span><span class="delta plain"></span></td><td class="be">36,590</td><td class="def" title="35,300 ＋ 收盤 1410 ＋ 價差 +195（11/20 日盤收盤）">36,905</td><td class="strike">35,300</td><td class="def" title="35,300 − 收盤 1030 ＋ 價差 +195（11/20 日盤收盤）">34,465</td><td class="be">34,000</td><td class="px" data-tab="fri" data-side="P" data-k="35300" data-px="1300"><span class="pxnum">1300</span><span class="delta plain"></span></td><td class="chg " title="今日 +26%（樣本不足或無成交，不判定）">+26%</td><td class="oi">13</td><td class="amt oiamt" style="background:rgba(30,160,70,0.15)">66萬<span class="oichg up" title="ΔOI +13 口 × 收盤 1030 × 50">+66萬</span></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 24.3%,transparent 24.3% 100%)">51</td><td class="amt" data-tab="fri" data-side="P" data-k="35300" data-amt="3315000" style="background:rgb(165,217,181)"><span class="amtnum">3,315,000</span><span class="amtsm">332</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="fri" data-side="C" data-k="35400" data-amt="2294000" style="background:rgb(214,52,52)"><span class="amtnum">2,294,000</span><span class="amtsm">229</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 100.0%,transparent 100.0% 100%)">37</td><td class="amt oiamt" style="background:rgba(214,52,52,0.46)">12800萬<span class="oichg up" title="ΔOI +2,000 口 × 收盤 1280 × 50">+12800萬</span></td><td class="oi">2,000</td><td class="chg " title="今日 -8%（樣本不足或無成交，不判定）">-8%</td><td class="px" data-tab="fri" data-side="C" data-k="35400" data-px="1240"><span class="pxnum">1240</span><span class="delta plain"></span></td><td class="be">36,640</td><td class="def" title="35,400 ＋ 收盤 1280 ＋ 價差 +195（11/20 日盤收盤）">36,875</td><td class="strike">35,400</td><td class="def" title="35,400 − 收盤 1030 ＋ 價差 +195（11/20 日盤收盤）">34,565</td><td class="be">34,040</td><td class="px" data-tab="fri" data-side="P" data-k="35400" data-px="1360"><span class="pxnum">1360</span><span class="delta plain"></span></td><td class="chg " title="今日 +28%（樣本不足或無成交，不判定）">+28%</td><td class="oi">35</td><td class="amt oiamt" style="background:rgba(30,160,70,0.25)">180萬<span class="oichg up" title="ΔOI +35 口 × 收盤 1030 × 50">+180萬</span></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 8.6%,transparent 8.6% 100%)">18</td><td class="amt" data-tab="fri" data-side="P" data-k="35400" data-amt="1224000" style="background:rgb(203,233,212)"><span class="amtnum">1,224,000</span><span class="amtsm">122</span><span class="delta"></span></td></tr>
+</tbody>
+</table>
+</div>
+<div class="note">
+  <b>本頁重點</b>：買權最大量 35,400（37 口）、賣權最大量 34,500（210 口）。未平倉牆（11/20 收盤・11/27 到期）：買權壓力 <b>35,000</b>、賣權支撐 <b>34,500</b>、Put/Call 未平倉比 <b>0.12</b>。
+</div>
+</section>
+<section class="panel" data-panel="wed2">
+<div class="sub sub-tab">12/02 到期（W1）　·　⚠ 非今日行情　最後成交 11/20 04:35:23　·　本到期別成交 434 口</div>
+<div class="kpis">
+  <div class="kpi call"><div class="l">CALL 成交量</div><div class="v">0<small> 口</small></div></div>
+  <div class="kpi put"><div class="l">PUT 成交量</div><div class="v">61<small> 口</small></div></div>
+  <div class="kpi"><div class="l">Put/Call 量比</div><div class="v">0.00</div></div>
+  <div class="kpi"><div class="l">P/C 未平倉比</div><div class="v">0.14</div></div>
+  <div class="kpi"><div class="l">價平</div><div class="v">36,000</div></div>
+</div>
+<div class="mind flat">
+  <div class="mh">莊家意圖<span class="mq">觀望</span></div>
+  <div class="mlegs">
+    <div class="leg"><span class="lgl">標的之上・買權</span><span class="lgn">量能／樣本不足（0 口 / 0 檔），不判定</span></div>
+    <div class="leg"><span class="lgl">標的之下・賣權</span><span class="lgn">量能／樣本不足（0 口 / 0 檔），不判定</span></div>
+  </div>
+  <div class="mhow">買權側量能／樣本不足、賣權側量能／樣本不足，四象限不成立。莊家今天沒有表態，這種盤最容易兩面被巴 —— 先不做。</div>
+  
+  <div class="mnote">失效條件：等任一側出現明確的綠（築牆）或粉（追價）再看。</div>
+  <div class="mexp">⚠ 資料已超過 15 分鐘，方向判讀不可用 —— 到 Actions 手動 Run 一次再看</div>
+</div>
+<div class="zones">
+  <div class="zone res">
+    <div class="zh">盤中壓力區<small>標的之上・買權今日成交口數</small></div>
+    <div class="zrow thin"><span class="zm">量能不足（此側價外合計 0 口），不做撐壓判讀</span></div>
+    <div class="zn">昨日 買權 OI 牆：視窗內無資料</div>
+  </div>
+  <div class="zone sup">
+    <div class="zh">盤中支撐區<small>標的之下・賣權今日成交口數</small></div>
+    <div class="zrow thin"><span class="zm">量能不足（此側價外合計 0 口），不做撐壓判讀</span></div>
+    <div class="zn">昨日 賣權 OI 牆：視窗內無資料</div>
+  </div>
+</div>
+<div class="basis">防守＝11/20 日盤收盤：台指期 <b>35,875</b> − 合成 35,860 ＝ 價差 <b>+15</b> 點（一天一換，夜盤不跳）</div>
+<div class="tblwrap">
+<table>
+<thead><tr>
+  <th class="grp-c">CALL 金額<span class="amtsm">(萬)</span></th><th class="grp-c">口數</th><th class="grp-c">未平倉<br>金額</th><th class="grp-c">OI</th><th class="grp-c">今日</th><th class="grp-c">權利金</th><th class="grp-c">損益兩平</th><th class="grp-c">防守<span class="thsm">期貨點位·日盤收盤</span></th>
+  <th>履約價</th>
+  <th class="grp-p">防守<span class="thsm">期貨點位·日盤收盤</span></th><th class="grp-p">損益兩平</th><th class="grp-p">權利金</th><th class="grp-p">今日</th><th class="grp-p">OI</th><th class="grp-p">未平倉<br>金額</th><th class="grp-p">口數</th><th class="grp-p">PUT 金額<span class="amtsm">(萬)</span></th>
+</tr></thead>
+<tbody>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="amt oiamt"></td><td class="oi"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="def" title="34,500 ＋ 收盤 2230 ＋ 價差 +15（11/20 日盤收盤）">36,745</td><td class="strike">34,500</td><td class="def" title="34,500 − 收盤 1020 ＋ 價差 +15（11/20 日盤收盤）">33,495</td><td class="be">33,180</td><td class="px" data-tab="wed2" data-side="P" data-k="34500" data-px="1320"><span class="pxnum">1320</span><span class="delta plain"></span></td><td class="chg " title="今日 +52%（樣本不足或無成交，不判定）">+52%</td><td class="oi">6</td><td class="amt oiamt" style="background:rgba(30,160,70,0.56)">30萬<span class="oichg up" title="ΔOI +6 口 × 收盤 1020 × 50">+30萬</span></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 66.7%,transparent 66.7% 100%)">14</td><td class="amt" data-tab="wed2" data-side="P" data-k="34500" data-amt="924000" style="background:rgb(92,186,121)"><span class="amtnum">924,000</span><span class="amtsm">92.4</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="amt oiamt"></td><td class="oi"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="def" title="34,600 ＋ 收盤 2160 ＋ 價差 +15（11/20 日盤收盤）">36,775</td><td class="strike">34,600</td><td class="def" title="34,600 − 收盤 910 ＋ 價差 +15（11/20 日盤收盤）">33,705</td><td class="be">33,200</td><td class="px" data-tab="wed2" data-side="P" data-k="34600" data-px="1400"><span class="pxnum">1400</span><span class="delta plain"></span></td><td class="chg " title="今日 +54%（樣本不足或無成交，不判定）">+54%</td><td class="oi"></td><td class="amt oiamt"></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 42.9%,transparent 42.9% 100%)">9</td><td class="amt" data-tab="wed2" data-side="P" data-k="34600" data-amt="630000" style="background:rgb(123,199,146)"><span class="amtnum">630,000</span><span class="amtsm">63.0</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="amt oiamt"></td><td class="oi"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="def" title="34,700 ＋ 收盤 2100 ＋ 價差 +15（11/20 日盤收盤）">36,815</td><td class="strike">34,700</td><td class="def" title="34,700 − 收盤 945 ＋ 價差 +15（11/20 日盤收盤）">33,770</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="oi"></td><td class="amt oiamt"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="amt oiamt"></td><td class="oi"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="def" title="34,800 ＋ 收盤 2040 ＋ 價差 +15（11/20 日盤收盤）">36,855</td><td class="strike">34,800</td><td class="def" title="34,800 − 收盤 985 ＋ 價差 +15（11/20 日盤收盤）">33,830</td><td class="be">33,340</td><td class="px" data-tab="wed2" data-side="P" data-k="34800" data-px="1460"><span class="pxnum">1460</span><span class="delta plain"></span></td><td class="chg " title="今日 +48%（樣本不足或無成交，不判定）">+48%</td><td class="oi"></td><td class="amt oiamt"></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 9.5%,transparent 9.5% 100%)">2</td><td class="amt" data-tab="wed2" data-side="P" data-k="34800" data-amt="146000" style="background:rgb(196,230,206)"><span class="amtnum">146,000</span><span class="amtsm">14.6</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="amt oiamt"></td><td class="oi"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="def" title="34,900 ＋ 收盤 1970 ＋ 價差 +15（11/20 日盤收盤）">36,885</td><td class="strike">34,900</td><td class="def" title="34,900 − 收盤 1010 ＋ 價差 +15（11/20 日盤收盤）">33,905</td><td class="be">33,360</td><td class="px" data-tab="wed2" data-side="P" data-k="34900" data-px="1540"><span class="pxnum">1540</span><span class="delta plain"></span></td><td class="chg " title="今日 +52%（樣本不足或無成交，不判定）">+52%</td><td class="oi"></td><td class="amt oiamt"></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 42.9%,transparent 42.9% 100%)">9</td><td class="amt" data-tab="wed2" data-side="P" data-k="34900" data-amt="693000" style="background:rgb(116,196,140)"><span class="amtnum">693,000</span><span class="amtsm">69.3</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="amt oiamt"></td><td class="oi"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="def" title="35,000 ＋ 收盤 1910 ＋ 價差 +15（11/20 日盤收盤）">36,925</td><td class="strike">35,000</td><td class="def" title="35,000 − 收盤 1150 ＋ 價差 +15（11/20 日盤收盤）">33,865</td><td class="be">33,410</td><td class="px" data-tab="wed2" data-side="P" data-k="35000" data-px="1590"><span class="pxnum">1590</span><span class="delta plain"></span></td><td class="chg " title="今日 +51%（樣本不足或無成交，不判定）">+51%</td><td class="oi">6</td><td class="amt oiamt" style="background:rgba(30,160,70,0.60)">34萬<span class="oichg up" title="ΔOI +6 口 × 收盤 1150 × 50">+34萬</span></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 100.0%,transparent 100.0% 100%)">21</td><td class="amt" data-tab="wed2" data-side="P" data-k="35000" data-amt="1669500" style="background:rgb(30,160,70)"><span class="amtnum">1,669,500</span><span class="amtsm">167</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="amt oiamt"></td><td class="oi"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="def" title="35,100 ＋ 收盤 1850 ＋ 價差 +15（11/20 日盤收盤）">36,965</td><td class="strike">35,100</td><td class="def" title="35,100 − 收盤 1240 ＋ 價差 +15（11/20 日盤收盤）">33,875</td><td class="be">33,500</td><td class="px" data-tab="wed2" data-side="P" data-k="35100" data-px="1600"><span class="pxnum">1600</span><span class="delta plain"></span></td><td class="chg " title="今日 +47%（樣本不足或無成交，不判定）">+47%</td><td class="oi">1</td><td class="amt oiamt" style="background:rgba(30,160,70,0.23)">6萬<span class="oichg up" title="ΔOI +1 口 × 收盤 1240 × 50">+6萬</span></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 9.5%,transparent 9.5% 100%)">2</td><td class="amt" data-tab="wed2" data-side="P" data-k="35100" data-amt="160000" style="background:rgb(193,228,204)"><span class="amtnum">160,000</span><span class="amtsm">16.0</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="amt oiamt"></td><td class="oi"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="def" title="35,200 ＋ 收盤 1780 ＋ 價差 +15（11/20 日盤收盤）">36,995</td><td class="strike">35,200</td><td class="def" title="35,200 − 收盤 1130 ＋ 價差 +15（11/20 日盤收盤）">34,085</td><td class="be">33,550</td><td class="px" data-tab="wed2" data-side="P" data-k="35200" data-px="1650"><span class="pxnum">1650</span><span class="delta plain"></span></td><td class="chg " title="今日 +46%（樣本不足或無成交，不判定）">+46%</td><td class="oi"></td><td class="amt oiamt"></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 9.5%,transparent 9.5% 100%)">2</td><td class="amt" data-tab="wed2" data-side="P" data-k="35200" data-amt="165000" style="background:rgb(191,228,203)"><span class="amtnum">165,000</span><span class="amtsm">16.5</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="amt oiamt"></td><td class="oi"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="def" title="35,300 ＋ 收盤 1730 ＋ 價差 +15（11/20 日盤收盤）">37,045</td><td class="strike">35,300</td><td class="def" title="35,300 − 收盤 985 ＋ 價差 +15（11/20 日盤收盤）">34,330</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="oi"></td><td class="amt oiamt"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="amt oiamt"></td><td class="oi"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="def" title="35,400 ＋ 收盤 1670 ＋ 價差 +15（11/20 日盤收盤）">37,085</td><td class="strike">35,400</td><td class="def" title="35,400 − 收盤 1320 ＋ 價差 +15（11/20 日盤收盤）">34,095</td><td class="be">33,640</td><td class="px" data-tab="wed2" data-side="P" data-k="35400" data-px="1760"><span class="pxnum">1760</span><span class="delta plain"></span></td><td class="chg " title="今日 +44%（樣本不足或無成交，不判定）">+44%</td><td class="oi">1</td><td class="amt oiamt" style="background:rgba(30,160,70,0.24)">6萬<span class="oichg up" title="ΔOI +1 口 × 收盤 1320 × 50">+6萬</span></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 9.5%,transparent 9.5% 100%)">2</td><td class="amt" data-tab="wed2" data-side="P" data-k="35400" data-amt="176000" style="background:rgb(189,227,201)"><span class="amtnum">176,000</span><span class="amtsm">17.6</span><span class="delta"></span></td></tr>
+</tbody>
+</table>
+</div>
+<div class="note">
+  <b>本頁重點</b>：買權最大量 -、賣權最大量 35,000（21 口）。未平倉牆（11/20 收盤・12/02 到期）：買權壓力 <b>43,800</b>、賣權支撐 <b>36,000</b>、Put/Call 未平倉比 <b>0.14</b>。
+</div>
+</section>
+<section class="panel" data-panel="mth">
+<div class="sub sub-tab">12/16 到期（12月選）　·　⚠ 非今日行情　最後成交 11/20 04:59:22　·　本到期別成交 8,202 口</div>
+<div class="kpis">
+  <div class="kpi call"><div class="l">CALL 成交量</div><div class="v">69<small> 口</small></div></div>
+  <div class="kpi put"><div class="l">PUT 成交量</div><div class="v">909<small> 口</small></div></div>
+  <div class="kpi"><div class="l">Put/Call 量比</div><div class="v">13.17</div></div>
+  <div class="kpi"><div class="l">P/C 未平倉比</div><div class="v">0.71</div></div>
+  <div class="kpi"><div class="l">價平</div><div class="v">34,000</div></div>
+</div>
+<div class="mind flat">
+  <div class="mh">莊家意圖<span class="mq">觀望</span></div>
+  <div class="mlegs">
+    <div class="leg"><span class="lgl">標的之上・買權</span><span class="lgn">量能／樣本不足（0 口 / 0 檔），不判定</span></div>
+    <div class="leg"><span class="lgl">標的之下・賣權</span><span class="lgn">量能／樣本不足（0 口 / 0 檔），不判定</span></div>
+  </div>
+  <div class="mhow">買權側量能／樣本不足、賣權側量能／樣本不足，四象限不成立。莊家今天沒有表態，這種盤最容易兩面被巴 —— 先不做。</div>
+  <div class="mrange">台指參考區間　<b>33,000<small>昨日OI</small></b> ～ <b>35,000<small>昨日OI</small></b></div>
+  <div class="mnote">失效條件：等任一側出現明確的綠（築牆）或粉（追價）再看。</div>
+  <div class="mexp">⚠ 資料已超過 15 分鐘，方向判讀不可用 —— 到 Actions 手動 Run 一次再看</div>
+</div>
+<div class="zones">
+  <div class="zone res">
+    <div class="zh">盤中壓力區<small>標的之上・買權今日成交口數</small></div>
+    <div class="zrow thin"><span class="zm">量能不足（此側價外合計 54 口），不做撐壓判讀</span></div>
+    <div class="zn">昨日 買權 OI 牆 35,000</div>
+  </div>
+  <div class="zone sup">
+    <div class="zh">盤中支撐區<small>標的之下・賣權今日成交口數</small></div>
+    <div class="zrow thin"><span class="zm">量能不足（此側價外合計 247 口），不做撐壓判讀</span></div>
+    <div class="zn">昨日 賣權 OI 牆 33,000</div>
+  </div>
+</div>
+<div class="basis">防守＝11/20 日盤收盤：台指期 <b>35,875</b> − 合成 35,810 ＝ 價差 <b>+65</b> 點（一天一換，夜盤不跳）</div>
+<div class="tblwrap">
+<table>
+<thead><tr>
+  <th class="grp-c">CALL 金額<span class="amtsm">(萬)</span></th><th class="grp-c">口數</th><th class="grp-c">未平倉<br>金額</th><th class="grp-c">OI</th><th class="grp-c">今日</th><th class="grp-c">權利金</th><th class="grp-c">損益兩平</th><th class="grp-c">防守<span class="thsm">期貨點位·日盤收盤</span></th>
+  <th>履約價</th>
+  <th class="grp-p">防守<span class="thsm">期貨點位·日盤收盤</span></th><th class="grp-p">損益兩平</th><th class="grp-p">權利金</th><th class="grp-p">今日</th><th class="grp-p">OI</th><th class="grp-p">未平倉<br>金額</th><th class="grp-p">口數</th><th class="grp-p">PUT 金額<span class="amtsm">(萬)</span></th>
+</tr></thead>
+<tbody>
+<tr class="drow"><td class="amt" data-tab="mth" data-side="C" data-k="32600" data-amt="142000" style="background:rgb(244,201,201)"><span class="amtnum">142,000</span><span class="amtsm">14.2</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 4.8%,transparent 4.8% 100%)">1</td><td class="amt oiamt"></td><td class="oi"></td><td class="chg " title="今日 -29%（樣本不足或無成交，不判定）">-29%</td><td class="px" data-tab="mth" data-side="C" data-k="32600" data-px="2840"><span class="pxnum">2840</span><span class="delta plain"></span></td><td class="be">35,440</td><td class="def" title="32,600 ＋ 收盤 4010 ＋ 價差 +65（11/20 日盤收盤）">36,675</td><td class="strike">32,600</td><td class="def" title="32,600 − 收盤 895 ＋ 價差 +65（11/20 日盤收盤）">31,770</td><td class="be">31,580</td><td class="px" data-tab="mth" data-side="P" data-k="32600" data-px="1020"><span class="pxnum">1020</span><span class="delta plain"></span></td><td class="chg " title="今日 +24%（樣本不足或無成交，不判定）">+24%</td><td class="oi">17</td><td class="amt oiamt" style="background:rgba(30,160,70,0.06)">76萬<span class="oichg up" title="ΔOI +4 口 × 收盤 895 × 50">+17萬</span></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 2.0%,transparent 2.0% 100%)">6</td><td class="amt" data-tab="mth" data-side="P" data-k="32600" data-amt="306000" style="background:rgb(239,248,242)"><span class="amtnum">306,000</span><span class="amtsm">30.6</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="amt oiamt"></td><td class="oi"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="def" title="32,700 ＋ 收盤 3940 ＋ 價差 +65（11/20 日盤收盤）">36,705</td><td class="strike">32,700</td><td class="def" title="32,700 − 收盤 840 ＋ 價差 +65（11/20 日盤收盤）">31,925</td><td class="be">31,180</td><td class="px" data-tab="mth" data-side="P" data-k="32700" data-px="1520"><span class="pxnum">1520</span><span class="delta plain"></span></td><td class="chg " title="今日 +81%（樣本不足或無成交，不判定）">+81%</td><td class="oi">51</td><td class="amt oiamt" style="background:rgba(30,160,70,0.10)">214萬<span class="oichg up" title="ΔOI +51 口 × 收盤 840 × 50">+214萬</span></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 3.3%,transparent 3.3% 100%)">10</td><td class="amt" data-tab="mth" data-side="P" data-k="32700" data-amt="760000" style="background:rgb(229,244,234)"><span class="amtnum">760,000</span><span class="amtsm">76.0</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="amt oiamt"></td><td class="oi"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="def" title="32,800 ＋ 收盤 3870 ＋ 價差 +65（11/20 日盤收盤）">36,735</td><td class="strike">32,800</td><td class="def" title="32,800 − 收盤 760 ＋ 價差 +65（11/20 日盤收盤）">32,105</td><td class="be">31,610</td><td class="px" data-tab="mth" data-side="P" data-k="32800" data-px="1190"><span class="pxnum">1190</span><span class="delta plain"></span></td><td class="chg " title="今日 +36%（樣本不足或無成交，不判定）">+36%</td><td class="oi">14</td><td class="amt oiamt" style="background:rgba(30,160,70,0.05)">53萬<span class="oichg up" title="ΔOI +4 口 × 收盤 760 × 50">+15萬</span></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 1.0%,transparent 1.0% 100%)">3</td><td class="amt" data-tab="mth" data-side="P" data-k="32800" data-amt="178500" style="background:rgb(243,250,245)"><span class="amtnum">178,500</span><span class="amtsm">17.9</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="amt oiamt"></td><td class="oi"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="def" title="32,900 ＋ 收盤 3790 ＋ 價差 +65（11/20 日盤收盤）">36,755</td><td class="strike">32,900</td><td class="def" title="32,900 − 收盤 900 ＋ 價差 +65（11/20 日盤收盤）">32,065</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="oi"></td><td class="amt oiamt"></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="amt oiamt"></td><td class="oi"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="def" title="33,000 ＋ 收盤 3720 ＋ 價差 +65（11/20 日盤收盤）">36,785</td><td class="strike">33,000</td><td class="def" title="33,000 − 收盤 940 ＋ 價差 +65（11/20 日盤收盤）">32,125</td><td class="be">31,280</td><td class="px" data-tab="mth" data-side="P" data-k="33000" data-px="1720"><span class="pxnum">1720</span><span class="delta plain"></span></td><td class="chg " title="今日 +83%（樣本不足或無成交，不判定）">+83%</td><td class="oi">244</td><td class="amt oiamt" style="background:rgba(30,160,70,0.25)">1146萬<span class="oichg up" title="ΔOI +62 口 × 收盤 940 × 50">+291萬</span></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 36.4%,transparent 36.4% 100%)">110</td><td class="amt" data-tab="mth" data-side="P" data-k="33000" data-amt="9460000" style="background:rgb(154,212,172)"><span class="amtnum">9,460,000</span><span class="amtsm">946</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="amt oiamt"></td><td class="oi"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="def" title="33,100 ＋ 收盤 3650 ＋ 價差 +65（11/20 日盤收盤）">36,815</td><td class="strike">33,100</td><td class="def" title="33,100 − 收盤 950 ＋ 價差 +65（11/20 日盤收盤）">32,215</td><td class="be">32,140</td><td class="px" data-tab="mth" data-side="P" data-k="33100" data-px="960"><span class="pxnum">960</span><span class="delta plain"></span></td><td class="chg " title="今日 +1%（樣本不足或無成交，不判定）">+1%</td><td class="oi"></td><td class="amt oiamt"></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 0.3%,transparent 0.3% 100%)">1</td><td class="amt" data-tab="mth" data-side="P" data-k="33100" data-amt="48000" style="background:rgb(249,252,250)"><span class="amtnum">48,000</span><span class="amtsm">4.80</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="amt oiamt" style="background:rgba(214,52,52,0.14)">19萬<span class="oichg up" title="ΔOI +1 口 × 收盤 3830 × 50">+19萬</span></td><td class="oi">1</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="def" title="33,200 ＋ 收盤 3830 ＋ 價差 +65（11/20 日盤收盤）">37,095</td><td class="strike">33,200</td><td class="def" title="33,200 − 收盤 805 ＋ 價差 +65（11/20 日盤收盤）">32,460</td><td class="be">31,390</td><td class="px" data-tab="mth" data-side="P" data-k="33200" data-px="1810"><span class="pxnum">1810</span><span class="delta plain"></span></td><td class="chg " title="今日 +86%（樣本不足或無成交，不判定）">+86%</td><td class="oi">12</td><td class="amt oiamt" style="background:rgba(30,160,70,0.04)">48萬<span class="oichg up" title="ΔOI +1 口 × 收盤 805 × 50">+4萬</span></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 4.0%,transparent 4.0% 100%)">12</td><td class="amt" data-tab="mth" data-side="P" data-k="33200" data-amt="1086000" style="background:rgb(224,242,229)"><span class="amtnum">1,086,000</span><span class="amtsm">109</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="mth" data-side="C" data-k="33300" data-amt="171000" style="background:rgb(243,195,195)"><span class="amtnum">171,000</span><span class="amtsm">17.1</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 4.8%,transparent 4.8% 100%)">1</td><td class="amt oiamt"></td><td class="oi"></td><td class="chg " title="今日 -3%（樣本不足或無成交，不判定）">-3%</td><td class="px" data-tab="mth" data-side="C" data-k="33300" data-px="3420"><span class="pxnum">3420</span><span class="delta plain"></span></td><td class="be">36,720</td><td class="def" title="33,300 ＋ 收盤 3510 ＋ 價差 +65（11/20 日盤收盤）">36,875</td><td class="strike">33,300</td><td class="def" title="33,300 − 收盤 1010 ＋ 價差 +65（11/20 日盤收盤）">32,355</td><td class="be">32,160</td><td class="px" data-tab="mth" data-side="P" data-k="33300" data-px="1140"><span class="pxnum">1140</span><span class="delta plain"></span></td><td class="chg " title="今日 +13%（樣本不足或無成交，不判定）">+13%</td><td class="oi"></td><td class="amt oiamt"></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 2.3%,transparent 2.3% 100%)">7</td><td class="amt" data-tab="mth" data-side="P" data-k="33300" data-amt="399000" style="background:rgb(237,247,240)"><span class="amtnum">399,000</span><span class="amtsm">39.9</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="amt oiamt" style="background:rgba(214,52,52,0.14)">19萬<span class="oichg up" title="ΔOI +1 口 × 收盤 3850 × 50">+19萬</span></td><td class="oi">1</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="def" title="33,400 ＋ 收盤 3850 ＋ 價差 +65（11/20 日盤收盤）">37,315</td><td class="strike">33,400</td><td class="def" title="33,400 − 收盤 1060 ＋ 價差 +65（11/20 日盤收盤）">32,405</td><td class="be">31,500</td><td class="px" data-tab="mth" data-side="P" data-k="33400" data-px="1900"><span class="pxnum">1900</span><span class="delta plain"></span></td><td class="chg " title="今日 +79%（樣本不足或無成交，不判定）">+79%</td><td class="oi">82</td><td class="amt oiamt" style="background:rgba(30,160,70,0.15)">434萬<span class="oichg up" title="ΔOI +3 口 × 收盤 1060 × 50">+15萬</span></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 11.3%,transparent 11.3% 100%)">34</td><td class="amt" data-tab="mth" data-side="P" data-k="33400" data-amt="3230000" style="background:rgb(199,231,209)"><span class="amtnum">3,230,000</span><span class="amtsm">323</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="mth" data-side="C" data-k="33500" data-amt="319000" style="background:rgb(238,171,171)"><span class="amtnum">319,000</span><span class="amtsm">31.9</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 9.5%,transparent 9.5% 100%)">2</td><td class="amt oiamt" style="background:rgba(214,52,52,0.19)">33萬<span class="oichg up" title="ΔOI +2 口 × 收盤 3370 × 50">+33萬</span></td><td class="oi">2</td><td class="chg " title="今日 -5%（樣本不足或無成交，不判定）">-5%</td><td class="px" data-tab="mth" data-side="C" data-k="33500" data-px="3190"><span class="pxnum">3190</span><span class="delta plain"></span></td><td class="be">36,690</td><td class="def" title="33,500 ＋ 收盤 3370 ＋ 價差 +65（11/20 日盤收盤）">36,935</td><td class="strike">33,500</td><td class="def" title="33,500 − 收盤 1170 ＋ 價差 +65（11/20 日盤收盤）">32,395</td><td class="be">31,810</td><td class="px" data-tab="mth" data-side="P" data-k="33500" data-px="1690"><span class="pxnum">1690</span><span class="delta plain"></span></td><td class="chg " title="今日 +58%（樣本不足或無成交，不判定）">+58%</td><td class="oi">35</td><td class="amt oiamt" style="background:rgba(30,160,70,0.10)">204萬<span class="oichg up" title="ΔOI +35 口 × 收盤 1170 × 50">+204萬</span></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 6.3%,transparent 6.3% 100%)">19</td><td class="amt" data-tab="mth" data-side="P" data-k="33500" data-amt="1605500" style="background:rgb(217,238,223)"><span class="amtnum">1,605,500</span><span class="amtsm">161</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="amt oiamt"></td><td class="oi"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="def" title="33,600 ＋ 收盤 3290 ＋ 價差 +65（11/20 日盤收盤）">36,955</td><td class="strike">33,600</td><td class="def" title="33,600 − 收盤 1100 ＋ 價差 +65（11/20 日盤收盤）">32,565</td><td class="be">31,580</td><td class="px" data-tab="mth" data-side="P" data-k="33600" data-px="2020"><span class="pxnum">2020</span><span class="delta plain"></span></td><td class="chg " title="今日 +84%（樣本不足或無成交，不判定）">+84%</td><td class="oi">17</td><td class="amt oiamt" style="background:rgba(30,160,70,0.06)">93萬</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 5.0%,transparent 5.0% 100%)">15</td><td class="amt" data-tab="mth" data-side="P" data-k="33600" data-amt="1515000" style="background:rgb(218,239,224)"><span class="amtnum">1,515,000</span><span class="amtsm">152</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="mth" data-side="C" data-k="33700" data-amt="387000" style="background:rgb(236,162,162)"><span class="amtnum">387,000</span><span class="amtsm">38.7</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 14.3%,transparent 14.3% 100%)">3</td><td class="amt oiamt"></td><td class="oi"></td><td class="chg " title="今日 -20%（樣本不足或無成交，不判定）">-20%</td><td class="px" data-tab="mth" data-side="C" data-k="33700" data-px="2580"><span class="pxnum">2580</span><span class="delta plain"></span></td><td class="be">36,280</td><td class="def" title="33,700 ＋ 收盤 3220 ＋ 價差 +65（11/20 日盤收盤）">36,985</td><td class="strike">33,700</td><td class="def" title="33,700 − 收盤 1200 ＋ 價差 +65（11/20 日盤收盤）">32,565</td><td class="be">31,730</td><td class="px" data-tab="mth" data-side="P" data-k="33700" data-px="1970"><span class="pxnum">1970</span><span class="delta plain"></span></td><td class="chg " title="今日 +76%（樣本不足或無成交，不判定）">+76%</td><td class="oi">9</td><td class="amt oiamt" style="background:rgba(30,160,70,0.05)">54萬<span class="oichg up" title="ΔOI +1 口 × 收盤 1200 × 50">+6萬</span></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 1.7%,transparent 1.7% 100%)">5</td><td class="amt" data-tab="mth" data-side="P" data-k="33700" data-amt="492500" style="background:rgb(235,246,238)"><span class="amtnum">492,500</span><span class="amtsm">49.2</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="mth" data-side="C" data-k="33800" data-amt="852000" style="background:rgb(226,111,111)"><span class="amtnum">852,000</span><span class="amtsm">85.2</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 38.1%,transparent 38.1% 100%)">8</td><td class="amt oiamt"></td><td class="oi"></td><td class="chg " title="今日 -32%（樣本不足或無成交，不判定）">-32%</td><td class="px" data-tab="mth" data-side="C" data-k="33800" data-px="2130"><span class="pxnum">2130</span><span class="delta plain"></span></td><td class="be">35,930</td><td class="def" title="33,800 ＋ 收盤 3150 ＋ 價差 +65（11/20 日盤收盤）">37,015</td><td class="strike">33,800</td><td class="def" title="33,800 − 收盤 1150 ＋ 價差 +65（11/20 日盤收盤）">32,715</td><td class="be">32,660</td><td class="px" data-tab="mth" data-side="P" data-k="33800" data-px="1140"><span class="pxnum">1140</span><span class="delta plain"></span></td><td class="chg " title="今日 -1%（樣本不足或無成交，不判定）">-1%</td><td class="oi">27</td><td class="amt oiamt" style="background:rgba(30,160,70,0.08)">155萬<span class="oichg up" title="ΔOI +14 口 × 收盤 1150 × 50">+80萬</span></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 2.3%,transparent 2.3% 100%)">7</td><td class="amt" data-tab="mth" data-side="P" data-k="33800" data-amt="399000" style="background:rgb(237,247,240)"><span class="amtnum">399,000</span><span class="amtsm">39.9</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="amt oiamt"></td><td class="oi"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="def" title="33,900 ＋ 收盤 3090 ＋ 價差 +65（11/20 日盤收盤）">37,055</td><td class="strike">33,900</td><td class="def" title="33,900 − 收盤 1200 ＋ 價差 +65（11/20 日盤收盤）">32,765</td><td class="be">31,650</td><td class="px" data-tab="mth" data-side="P" data-k="33900" data-px="2250"><span class="pxnum">2250</span><span class="delta plain"></span></td><td class="chg " title="今日 +88%（樣本不足或無成交，不判定）">+88%</td><td class="oi">12</td><td class="amt oiamt" style="background:rgba(30,160,70,0.05)">72萬<span class="oichg down" title="ΔOI -1 口 × 收盤 1200 × 50">−6萬</span></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 6.0%,transparent 6.0% 100%)">18</td><td class="amt" data-tab="mth" data-side="P" data-k="33900" data-amt="2025000" style="background:rgb(211,236,219)"><span class="amtnum">2,025,000</span><span class="amtsm">202</span><span class="delta"></span></td></tr>
+<tr class="drow atm"><td class="amt" data-tab="mth" data-side="C" data-k="34000" data-amt="139000" style="background:rgb(244,202,202)"><span class="amtnum">139,000</span><span class="amtsm">13.9</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 4.8%,transparent 4.8% 100%)">1</td><td class="amt oiamt" style="background:rgba(214,52,52,0.12)">14萬<span class="oichg up" title="ΔOI +1 口 × 收盤 2990 × 50">+14萬</span></td><td class="oi">1</td><td class="chg " title="今日 -9%（樣本不足或無成交，不判定）">-9%</td><td class="px" data-tab="mth" data-side="C" data-k="34000" data-px="2780"><span class="pxnum">2780</span><span class="delta plain"></span></td><td class="be">36,780</td><td class="def" title="34,000 ＋ 收盤 2990 ＋ 價差 +65（11/20 日盤收盤）">37,055</td><td class="strike">34,000</td><td class="def" title="34,000 − 收盤 1250 ＋ 價差 +65（11/20 日盤收盤）">32,815</td><td class="be">31,800</td><td class="px" data-tab="mth" data-side="P" data-k="34000" data-px="2200"><span class="pxnum">2200</span><span class="delta plain"></span></td><td class="chg " title="今日 +80%（樣本不足或無成交，不判定）">+80%</td><td class="oi">324</td><td class="amt oiamt" style="background:rgba(30,160,70,0.34)">2025萬<span class="oichg up" title="ΔOI +146 口 × 收盤 1250 × 50">+912萬</span></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 57.0%,transparent 57.0% 100%)">172</td><td class="amt" data-tab="mth" data-side="P" data-k="34000" data-amt="18920000" style="background:rgb(107,192,133)"><span class="amtnum">18,920,000</span><span class="amtsm">1,892</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="amt oiamt"></td><td class="oi"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="def" title="34,100 ＋ 收盤 2950 ＋ 價差 +65（11/20 日盤收盤）">37,115</td><td class="strike">34,100</td><td class="def" title="34,100 − 收盤 1250 ＋ 價差 +65（11/20 日盤收盤）">32,915</td><td class="be">32,490</td><td class="px" data-tab="mth" data-side="P" data-k="34100" data-px="1610"><span class="pxnum">1610</span><span class="delta plain"></span></td><td class="chg " title="今日 +29%（樣本不足或無成交，不判定）">+29%</td><td class="oi">24</td><td class="amt oiamt" style="background:rgba(30,160,70,0.08)">150萬<span class="oichg up" title="ΔOI +4 口 × 收盤 1250 × 50">+25萬</span></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 2.6%,transparent 2.6% 100%)">8</td><td class="amt" data-tab="mth" data-side="P" data-k="34100" data-amt="644000" style="background:rgb(232,245,236)"><span class="amtnum">644,000</span><span class="amtsm">64.4</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="amt oiamt"></td><td class="oi"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="def" title="34,200 ＋ 收盤 2880 ＋ 價差 +65（11/20 日盤收盤）">37,145</td><td class="strike">34,200</td><td class="def" title="34,200 − 收盤 1150 ＋ 價差 +65（11/20 日盤收盤）">33,115</td><td class="be">32,100</td><td class="px" data-tab="mth" data-side="P" data-k="34200" data-px="2100"><span class="pxnum">2100</span><span class="delta plain"></span></td><td class="chg " title="今日 +64%（樣本不足或無成交，不判定）">+64%</td><td class="oi">19</td><td class="amt oiamt" style="background:rgba(30,160,70,0.07)">109萬</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 6.3%,transparent 6.3% 100%)">19</td><td class="amt" data-tab="mth" data-side="P" data-k="34200" data-amt="1995000" style="background:rgb(212,236,219)"><span class="amtnum">1,995,000</span><span class="amtsm">200</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="amt oiamt"></td><td class="oi"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="def" title="34,300 ＋ 收盤 2820 ＋ 價差 +65（11/20 日盤收盤）">37,185</td><td class="strike">34,300</td><td class="def" title="34,300 − 收盤 1330 ＋ 價差 +65（11/20 日盤收盤）">33,035</td><td class="be">32,640</td><td class="px" data-tab="mth" data-side="P" data-k="34300" data-px="1660"><span class="pxnum">1660</span><span class="delta plain"></span></td><td class="chg " title="今日 +25%（樣本不足或無成交，不判定）">+25%</td><td class="oi">19</td><td class="amt oiamt" style="background:rgba(30,160,70,0.07)">126萬<span class="oichg up" title="ΔOI +7 口 × 收盤 1330 × 50">+46萬</span></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 2.3%,transparent 2.3% 100%)">7</td><td class="amt" data-tab="mth" data-side="P" data-k="34300" data-amt="581000" style="background:rgb(233,245,237)"><span class="amtnum">581,000</span><span class="amtsm">58.1</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="amt oiamt"></td><td class="oi"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="def" title="34,400 ＋ 收盤 2780 ＋ 價差 +65（11/20 日盤收盤）">37,245</td><td class="strike">34,400</td><td class="def" title="34,400 − 收盤 1370 ＋ 價差 +65（11/20 日盤收盤）">33,095</td><td class="be">31,890</td><td class="px" data-tab="mth" data-side="P" data-k="34400" data-px="2510"><span class="pxnum">2510</span><span class="delta plain"></span></td><td class="chg " title="今日 +83%（樣本不足或無成交，不判定）">+83%</td><td class="oi">65</td><td class="amt oiamt" style="background:rgba(30,160,70,0.15)">445萬</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 17.2%,transparent 17.2% 100%)">52</td><td class="amt" data-tab="mth" data-side="P" data-k="34400" data-amt="6526000" style="background:rgb(172,220,187)"><span class="amtnum">6,526,000</span><span class="amtsm">653</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="mth" data-side="C" data-k="34500" data-amt="315000" style="background:rgb(238,172,172)"><span class="amtnum">315,000</span><span class="amtsm">31.5</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 14.3%,transparent 14.3% 100%)">3</td><td class="amt oiamt" style="background:rgba(214,52,52,0.12)">13萬<span class="oichg up" title="ΔOI +1 口 × 收盤 2690 × 50">+13萬</span></td><td class="oi">1</td><td class="chg " title="今日 -22%（樣本不足或無成交，不判定）">-22%</td><td class="px" data-tab="mth" data-side="C" data-k="34500" data-px="2100"><span class="pxnum">2100</span><span class="delta plain"></span></td><td class="be">36,600</td><td class="def" title="34,500 ＋ 收盤 2690 ＋ 價差 +65（11/20 日盤收盤）">37,255</td><td class="strike">34,500</td><td class="def" title="34,500 − 收盤 1400 ＋ 價差 +65（11/20 日盤收盤）">33,165</td><td class="be">32,020</td><td class="px" data-tab="mth" data-side="P" data-k="34500" data-px="2480"><span class="pxnum">2480</span><span class="delta plain"></span></td><td class="chg " title="今日 +77%（樣本不足或無成交，不判定）">+77%</td><td class="oi">97</td><td class="amt oiamt" style="background:rgba(30,160,70,0.19)">679萬<span class="oichg down" title="ΔOI -5 口 × 收盤 1400 × 50">−35萬</span></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 13.6%,transparent 13.6% 100%)">41</td><td class="amt" data-tab="mth" data-side="P" data-k="34500" data-amt="5084000" style="background:rgb(183,224,196)"><span class="amtnum">5,084,000</span><span class="amtsm">508</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="amt oiamt"></td><td class="oi"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="def" title="34,600 ＋ 收盤 2650 ＋ 價差 +65（11/20 日盤收盤）">37,315</td><td class="strike">34,600</td><td class="def" title="34,600 − 收盤 1420 ＋ 價差 +65（11/20 日盤收盤）">33,245</td><td class="be">32,400</td><td class="px" data-tab="mth" data-side="P" data-k="34600" data-px="2200"><span class="pxnum">2200</span><span class="delta plain"></span></td><td class="chg " title="今日 +55%（樣本不足或無成交，不判定）">+55%</td><td class="oi">13</td><td class="amt oiamt" style="background:rgba(30,160,70,0.06)">92萬<span class="oichg down" title="ΔOI -3 口 × 收盤 1420 × 50">−21萬</span></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 2.6%,transparent 2.6% 100%)">8</td><td class="amt" data-tab="mth" data-side="P" data-k="34600" data-amt="880000" style="background:rgb(227,243,232)"><span class="amtnum">880,000</span><span class="amtsm">88.0</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="amt oiamt"></td><td class="oi"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="def" title="34,700 ＋ 收盤 2590 ＋ 價差 +65（11/20 日盤收盤）">37,355</td><td class="strike">34,700</td><td class="def" title="34,700 − 收盤 1460 ＋ 價差 +65（11/20 日盤收盤）">33,305</td><td class="be">32,530</td><td class="px" data-tab="mth" data-side="P" data-k="34700" data-px="2170"><span class="pxnum">2170</span><span class="delta plain"></span></td><td class="chg " title="今日 +49%（樣本不足或無成交，不判定）">+49%</td><td class="oi">19</td><td class="amt oiamt" style="background:rgba(30,160,70,0.08)">138萬<span class="oichg up" title="ΔOI +5 口 × 收盤 1460 × 50">+36萬</span></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 3.3%,transparent 3.3% 100%)">10</td><td class="amt" data-tab="mth" data-side="P" data-k="34700" data-amt="1085000" style="background:rgb(224,242,229)"><span class="amtnum">1,085,000</span><span class="amtsm">108</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="amt oiamt"></td><td class="oi"></td><td class="e"></td><td class="e"></td><td class="e"></td><td class="def" title="34,800 ＋ 收盤 2530 ＋ 價差 +65（11/20 日盤收盤）">37,395</td><td class="strike">34,800</td><td class="def" title="34,800 − 收盤 1510 ＋ 價差 +65（11/20 日盤收盤）">33,355</td><td class="be">33,360</td><td class="px" data-tab="mth" data-side="P" data-k="34800" data-px="1440"><span class="pxnum">1440</span><span class="delta plain"></span></td><td class="chg " title="今日 -5%（樣本不足或無成交，不判定）">-5%</td><td class="oi">18</td><td class="amt oiamt" style="background:rgba(30,160,70,0.08)">135萬<span class="oichg up" title="ΔOI +3 口 × 收盤 1510 × 50">+22萬</span></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 3.3%,transparent 3.3% 100%)">10</td><td class="amt" data-tab="mth" data-side="P" data-k="34800" data-amt="720000" style="background:rgb(230,244,234)"><span class="amtnum">720,000</span><span class="amtsm">72.0</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="mth" data-side="C" data-k="34900" data-amt="1078000" style="background:rgb(222,91,91)"><span class="amtnum">1,078,000</span><span class="amtsm">108</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 52.4%,transparent 52.4% 100%)">11</td><td class="amt oiamt" style="background:rgba(214,52,52,0.16)">24萬<span class="oichg up" title="ΔOI +2 口 × 收盤 2440 × 50">+24萬</span></td><td class="oi">2</td><td class="chg " title="今日 -20%（樣本不足或無成交，不判定）">-20%</td><td class="px" data-tab="mth" data-side="C" data-k="34900" data-px="1960"><span class="pxnum">1960</span><span class="delta plain"></span></td><td class="be">36,860</td><td class="def" title="34,900 ＋ 收盤 2440 ＋ 價差 +65（11/20 日盤收盤）">37,405</td><td class="strike">34,900</td><td class="def" title="34,900 − 收盤 1620 ＋ 價差 +65（11/20 日盤收盤）">33,345</td><td class="be">32,490</td><td class="px" data-tab="mth" data-side="P" data-k="34900" data-px="2410"><span class="pxnum">2410</span><span class="delta plain"></span></td><td class="chg " title="今日 +56%（樣本不足或無成交，不判定）">+56%</td><td class="oi">13</td><td class="amt oiamt" style="background:rgba(30,160,70,0.07)">105萬</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 4.0%,transparent 4.0% 100%)">12</td><td class="amt" data-tab="mth" data-side="P" data-k="34900" data-amt="1446000" style="background:rgb(219,239,225)"><span class="amtnum">1,446,000</span><span class="amtsm">145</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="mth" data-side="C" data-k="35000" data-amt="1606500" style="background:rgb(214,52,52)"><span class="amtnum">1,606,500</span><span class="amtsm">161</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 100.0%,transparent 100.0% 100%)">21</td><td class="amt oiamt" style="background:rgba(214,52,52,0.60)">262萬<span class="oichg up" title="ΔOI +21 口 × 收盤 2390 × 50">+250萬</span></td><td class="oi">22</td><td class="chg " title="今日 -36%（樣本不足或無成交，不判定）">-36%</td><td class="px" data-tab="mth" data-side="C" data-k="35000" data-px="1530"><span class="pxnum">1530</span><span class="delta plain"></span></td><td class="be">36,530</td><td class="def" title="35,000 ＋ 收盤 2390 ＋ 價差 +65（11/20 日盤收盤）">37,455</td><td class="strike">35,000</td><td class="def" title="35,000 − 收盤 1580 ＋ 價差 +65（11/20 日盤收盤）">33,485</td><td class="be">32,300</td><td class="px" data-tab="mth" data-side="P" data-k="35000" data-px="2700"><span class="pxnum">2700</span><span class="delta plain"></span></td><td class="chg " title="今日 +71%（樣本不足或無成交，不判定）">+71%</td><td class="oi">714</td><td class="amt oiamt" style="background:rgba(30,160,70,0.60)">5640萬<span class="oichg up" title="ΔOI +240 口 × 收盤 1580 × 50">+1896萬</span></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 100.0%,transparent 100.0% 100%)">302</td><td class="amt" data-tab="mth" data-side="P" data-k="35000" data-amt="40770000" style="background:rgb(30,160,70)"><span class="amtnum">40,770,000</span><span class="amtsm">4,077</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="mth" data-side="C" data-k="35100" data-amt="105000" style="background:rgb(245,209,209)"><span class="amtnum">105,000</span><span class="amtsm">10.5</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 4.8%,transparent 4.8% 100%)">1</td><td class="amt oiamt"></td><td class="oi"></td><td class="chg " title="今日 -11%（樣本不足或無成交，不判定）">-11%</td><td class="px" data-tab="mth" data-side="C" data-k="35100" data-px="2100"><span class="pxnum">2100</span><span class="delta plain"></span></td><td class="be">37,200</td><td class="def" title="35,100 ＋ 收盤 2350 ＋ 價差 +65（11/20 日盤收盤）">37,515</td><td class="strike">35,100</td><td class="def" title="35,100 − 收盤 1620 ＋ 價差 +65（11/20 日盤收盤）">33,545</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="oi">10</td><td class="amt oiamt" style="background:rgba(30,160,70,0.06)">81萬<span class="oichg down" title="ΔOI -1 口 × 收盤 1620 × 50">−8萬</span></td><td class="e"></td><td class="e"></td></tr>
+<tr class="drow"><td class="amt" data-tab="mth" data-side="C" data-k="35200" data-amt="1325000" style="background:rgb(218,72,72)"><span class="amtnum">1,325,000</span><span class="amtsm">132</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 47.6%,transparent 47.6% 100%)">10</td><td class="amt oiamt"></td><td class="oi"></td><td class="chg " title="今日 +16%（樣本不足或無成交，不判定）">+16%</td><td class="px" data-tab="mth" data-side="C" data-k="35200" data-px="2650"><span class="pxnum">2650</span><span class="delta plain"></span></td><td class="be">37,850</td><td class="def" title="35,200 ＋ 收盤 2280 ＋ 價差 +65（11/20 日盤收盤）">37,545</td><td class="strike">35,200</td><td class="def" title="35,200 − 收盤 1660 ＋ 價差 +65（11/20 日盤收盤）">33,605</td><td class="be">33,300</td><td class="px" data-tab="mth" data-side="P" data-k="35200" data-px="1900"><span class="pxnum">1900</span><span class="delta plain"></span></td><td class="chg " title="今日 +14%（樣本不足或無成交，不判定）">+14%</td><td class="oi">32</td><td class="amt oiamt" style="background:rgba(30,160,70,0.11)">265萬<span class="oichg up" title="ΔOI +2 口 × 收盤 1660 × 50">+16萬</span></td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 5.0%,transparent 5.0% 100%)">15</td><td class="amt" data-tab="mth" data-side="P" data-k="35200" data-amt="1425000" style="background:rgb(219,239,225)"><span class="amtnum">1,425,000</span><span class="amtsm">142</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="e"></td><td class="e"></td><td class="amt oiamt" style="background:rgba(214,52,52,0.10)">11萬<span class="oichg up" title="ΔOI +1 口 × 收盤 2210 × 50">+11萬</span></td><td class="oi">1</td><td class="e"></td><td class="e"></td><td class="e"></td><td class="def" title="35,300 ＋ 收盤 2210 ＋ 價差 +65（11/20 日盤收盤）">37,575</td><td class="strike">35,300</td><td class="def" title="35,300 − 收盤 1720 ＋ 價差 +65（11/20 日盤收盤）">33,645</td><td class="be">33,200</td><td class="px" data-tab="mth" data-side="P" data-k="35300" data-px="2100"><span class="pxnum">2100</span><span class="delta plain"></span></td><td class="chg " title="今日 +22%（樣本不足或無成交，不判定）">+22%</td><td class="oi">4</td><td class="amt oiamt" style="background:rgba(30,160,70,0.04)">34萬</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 0.7%,transparent 0.7% 100%)">2</td><td class="amt" data-tab="mth" data-side="P" data-k="35300" data-amt="210000" style="background:rgb(242,249,244)"><span class="amtnum">210,000</span><span class="amtsm">21.0</span><span class="delta"></span></td></tr>
+<tr class="drow"><td class="amt" data-tab="mth" data-side="C" data-k="35400" data-amt="728000" style="background:rgb(228,123,123)"><span class="amtnum">728,000</span><span class="amtsm">72.8</span><span class="delta"></span></td><td class="vol" style="background:linear-gradient(to left,rgba(214,52,52,.42) 0 33.3%,transparent 33.3% 100%)">7</td><td class="amt oiamt" style="background:rgba(214,52,52,0.12)">13萬<span class="oichg up" title="ΔOI +1 口 × 收盤 2760 × 50">+13萬</span></td><td class="oi">1</td><td class="chg " title="今日 -4%（樣本不足或無成交，不判定）">-4%</td><td class="px" data-tab="mth" data-side="C" data-k="35400" data-px="2080"><span class="pxnum">2080</span><span class="delta plain"></span></td><td class="be">37,480</td><td class="def" title="35,400 ＋ 收盤 2760 ＋ 價差 +65（11/20 日盤收盤）">38,225</td><td class="strike">35,400</td><td class="def" title="35,400 − 收盤 1590 ＋ 價差 +65（11/20 日盤收盤）">33,875</td><td class="be">33,280</td><td class="px" data-tab="mth" data-side="P" data-k="35400" data-px="2120"><span class="pxnum">2120</span><span class="delta plain"></span></td><td class="chg " title="今日 +21%（樣本不足或無成交，不判定）">+21%</td><td class="oi">27</td><td class="amt oiamt" style="background:rgba(30,160,70,0.10)">214萬</td><td class="vol" style="background:linear-gradient(to right,rgba(30,160,70,.42) 0 1.3%,transparent 1.3% 100%)">4</td><td class="amt" data-tab="mth" data-side="P" data-k="35400" data-amt="424000" style="background:rgb(236,247,239)"><span class="amtnum">424,000</span><span class="amtsm">42.4</span><span class="delta"></span></td></tr>
+</tbody>
+</table>
+</div>
+<div class="note">
+  <b>本頁重點</b>：買權最大量 35,000（21 口）、賣權最大量 35,000（302 口）。未平倉牆（11/20 收盤・12/16 到期）：買權壓力 <b>50,000</b>、賣權支撐 <b>49,800</b>、Put/Call 未平倉比 <b>0.71</b>。
+</div>
+</section>
+<div class="legend">
+  <span><span class="sw" style="background:linear-gradient(90deg,transparent,rgba(214,52,52,.42))"></span>買權口數分布（由右往左）</span>
+  <span><span class="sw" style="background:linear-gradient(90deg,rgba(30,160,70,.42),transparent)"></span>賣權口數分布（由左往右）</span>
+  <span><span class="sw" style="background:linear-gradient(90deg,#fff,rgb(214,52,52))"></span>金額熱度</span>
+  <span><span class="sw" style="background:var(--atm);border:1px solid #d8b24a"></span>價平</span>
+  <span><b style="color:#ff6a5c">▲</b> 較上一版增加　<b style="color:#37d67a">▼</b> 較上一版減少（金額與權利金皆有）</span>
+  <span>網頁每 60 秒自動重新整理</span>
+</div>
+<div class="note">
+  <b>即時欄位</b>（MIS）：權利金、口數、金額、今日漲跌、損益兩平；金額 = 權利金 × 50 × 口數，為今日累積。<br>
+  <b>防守（期貨點位）</b>＝ 買權：履約價＋權利金＋價差；賣權：履約價−權利金＋價差。權利金與價差都用日盤收盤，
+  價差＝台指期 − 本到期別合成期貨（表格上方有寫），一天只換一次（下午 3 點新收盤檔公布後更新）。
+  跟「損益兩平」差在：損益兩平是即時權利金、加權點位；防守換成台指期點位，可直接拿來對期貨。
+  跟外部籌碼站的防守定義相同，但它的價差來源未完全確定，兩邊約差 1～10 點。<br>
+  <b>未平倉金額</b>＝ OI × 收盤價 × 50（收盤檔，一天更新一次、盤中不變），跟外部籌碼站的「金額」同一定義；底下小字＝較前一交易日的增減（ΔOI × 今日收盤 × 50），<span style="color:var(--call)">紅＝增加</span>、<span style="color:var(--put)">綠＝減少</span>，只算口數增減、不含價格漲跌；
+  是「留著多少部位」的存量，深價內的含大量內含價值，大不代表押注強。<br>
+  <b>盤中撐壓怎麼來的</b>：OI 盤中不更新，所以牆的位置改用<b>今日累積成交口數</b>抓 ——
+  壓力取標的之上口數最大的買權、支撐取標的之下口數最大的賣權，範圍限在畫面的 ±1,500 點視窗內。
+  用口數而非金額，是因為要跟 OI 牆對照，而 OI 的單位就是口數；而且金額 = 權利金×50×口數，
+  權利金隨著接近價平而變大，用金額排幾乎必然選出離標的最近那一檔，那是價平的定義而非市場押注的位置。
+  口數欄的分布條回答「牆有多高」，金額欄的熱度回答「押了多少錢」。
+  一側價外合計不足 500 口時直接標示量能不足，不硬給價位。<br>
+  <b>賣方築牆／買方追價</b>：直接看漲跌%會誤判 —— 指數一漲，全部買權一起漲、全部賣權一起跌，那是方向 beta。
+  本表扣掉<b>同側所有履約價漲跌%的中位數</b>，剩下的「超額」才是這一檔相對同儕的異常強弱：
+  跌得比同儕兇（綠）＝有人壓價收租，牆較硬；漲得比同儕兇（紅）＝有人追價，該價位可能被挑戰。
+  顯著門檻用超額絕對值的中位數自適應，不是固定值。<br>
+  <b>莊家意圖（四象限）</b>：給只做台指、不做選擇權的人用。把每一側價外檔位的超額做<b>量加權</b>
+  壓成一個分數 —— 等權平均必然≈0（中位數的定義就保證一半在上一半在下），量加權問的才是
+  「今天的錢押在被壓的檔還是被追的檔」。錢集中在被壓的檔＝賣方主導（買權側 SC、賣權側 SP），
+  集中在被追的檔＝買方主導（BC／BP）。兩側交叉成四象限：SC+SP＝區間盤、BC+SP＝偏多、
+  SC+BP＝偏空、BC+BP＝待變盤（買波動不買方向，等突破）。任一側中性或量能不足就顯示<b>觀望</b>，
+  不硬湊結論。上下緣優先取盤中口數重心，沒有才退回昨日 OI 牆。
+  <b>資料超過 15 分鐘整張卡會轉灰停用</b>，因為方向判讀對新鮮度的要求比表格高得多。<br>
+  <b>牆在移動</b>：卡片下緣比對盤中金額重心與昨日 OI 牆。兩者背離超過 100 點，代表今天的資金押在別的價位，
+  昨日那道支撐壓力已經不是同一個位置。<br>
+  <b>分頁</b>：四個分頁是不同結算日的合約，照結算先後排（本週三＝W 系列或月選、
+  本週五＝F 系列、下週三＝下一個週三到期的合約、最後一頁＝月選），
+  各自獨立計算量比、價平與 ▲▼ 增減；切換後的選擇會記住，自動重整不會跳回去。
+  <b>下週三</b>是還沒進入結算週的部位，量通常只有本週的零頭，牆的位置常是先卡好的
+  初始陣地，看的是下一段的區間預期，不要拿來當今天的當沖依據。
+  <b>月選（隔月）</b>那一頁挑的是「最近一個還沒出現在前三頁的月選」——
+  月選結算週當天它就是下個月，結算完之後換成剛變近月的那個月，所以標題會在
+  「月選結算」與「隔月結算」之間換，看小字的到期日最準。這一頁的重點不是盤中撐壓
+  （剛掛的月選一天可能只有幾百口），而是<b>昨日 OI 那道牆</b>：法人的月線級部位
+  先卡在哪裡。量能不足時盤中撐壓與莊家意圖都會自動擋掉不顯示，只留 OI 牆。<br>
+  <b>盤中多空空間</b>（最上面那張卡）：全市場約 2,700 檔的即時報價壓成三條線 ——
+  紅綠棒是<b>上漲家數 − 下跌家數</b>（狀態量），黃線是同一個數字減掉自己前 30 分鐘的
+  移動平均＝<b>去趨勢</b>後的短期動能（直接畫水位跟紅綠棒相關性 r=+0.88，等於把同一件事
+  畫兩次）。<b>藍線走右軸，是另一個來源的東西</b>：成交額前 100 大的買賣方向淨值（−1~+1），
+  也就是「大錢站哪一邊」。兩個軸的 0 對齊，所以<b>家數在零軸下、藍線在零軸上</b>
+  就是「個股在跌、大錢在買」——2026-09-07 就是這樣，指數 +1.67% 而家數 −419。
+  同向的日子藍線不帶新資訊；實測它對家數變化<b>沒有領先性</b>，不要當提前訊號用。
+  資料來自另一支常駐 Cloudflare 的 Worker（cron 每 5 分鐘掃一輪存進 KV），
+  瀏覽器直接向它拿，所以<b>這張卡的新舊跟本頁的產生時間無關</b>，它自己每 60 秒重抓一次；
+  Worker 掛掉時整張卡不顯示，不影響下面的選擇權報價。點卡片右上角可以進到完整版看型態判讀。
+  台指選擇權讀的是「錢押在哪個價位」，這張卡讀的是「多少家公司站在多方」，兩者互為補充。<br>
+  <b>限制</b>：OI 為期交所盤後公布，盤中沿用前一日；成交金額只知道成交，不知道那一口是新倉還是平倉，
+  所以「築牆」是傾向推論而非事實。此表為 TAIFEX MIS 約每 5 秒的準即時報價，非逐筆。
+</div>
+</div>
+<script>
+(function(){
+  var btns = [].slice.call(document.querySelectorAll('.tab'));
+  if(!btns.length) return;
+  var panels = [].slice.call(document.querySelectorAll('.panel'));
+  function show(id){
+    btns.forEach(function(b){ b.classList.toggle('on', b.getAttribute('data-tab') === id); });
+    panels.forEach(function(p){ p.classList.toggle('on', p.getAttribute('data-panel') === id); });
+    try { localStorage.setItem('txo_tab', id); } catch(e){}
+  }
+  var ids = btns.map(function(b){ return b.getAttribute('data-tab'); });
+  var saved = null;
+  try { saved = localStorage.getItem('txo_tab'); } catch(e){}
+  show(ids.indexOf(saved) >= 0 ? saved : ids[0]);
+  btns.forEach(function(b){
+    b.addEventListener('click', function(){ show(b.getAttribute('data-tab')); });
+  });
+})();
+</script>
+
+<script>
+(function(){
+  var wrap = document.querySelector('.wrap');
+  if(!wrap) return;
+  var GEN = wrap.getAttribute('data-gen') || '';
+  // 金額格與權利金格一起記；key = 分頁:側別:履約價:a(金額)/p(權利金)
+  // 分頁要進 key，否則週三／週五同一履約價會互相蓋掉基準。
+  var cells = [].slice.call(document.querySelectorAll('td[data-amt],td[data-px]'));
+  function keyOf(td){
+    return td.getAttribute('data-tab') + ':' + td.getAttribute('data-side') + ':' +
+           td.getAttribute('data-k') + (td.hasAttribute('data-amt') ? ':a' : ':p');
+  }
+  var cur = {};
+  cells.forEach(function(td){
+    cur[keyOf(td)] = +(td.getAttribute('data-amt') || td.getAttribute('data-px'));
+  });
+  var prev = null;
+  try { prev = JSON.parse(localStorage.getItem('txo_snap2') || 'null'); } catch(e){}
+  var base = null;
+  if(!prev){
+    localStorage.setItem('txo_snap2', JSON.stringify({gen:GEN, cur:cur, base:cur}));
+  } else if(prev.gen === GEN){
+    base = prev.base;                        // 同一版重整：沿用既有基準
+  } else {
+    base = prev.cur;                         // 換新版：上一版數字成為新基準
+    localStorage.setItem('txo_snap2', JSON.stringify({gen:GEN, cur:cur, base:prev.cur}));
+  }
+  if(!base) return;                          // 第一次看：尚無可比較的基準
+  // 手機版金額格是「萬」，▲▼ 增減也跟著用萬，不然單位對不上
+  var WAN = true;   // 2026-11-17 起桌機也用萬，▲▼ 一律跟著用萬
+  function fmtAmt(n){
+    if(!WAN) return n.toLocaleString('en-US');
+    var v = n / 1e4;
+    return v >= 100 ? Math.round(v).toLocaleString('en-US') : (v >= 10 ? v.toFixed(1) : v.toFixed(2));
+  }
+  function fmtPx(n){ return String(Math.round(n * 100) / 100); }   // 權利金保留小數
+  cells.forEach(function(td){
+    var key = keyOf(td);
+    if(!(key in base)) return;
+    var d = cur[key] - base[key];
+    if(Math.abs(d) < 1e-9) return;
+    var s = td.querySelector('.delta');
+    if(!s) return;
+    var isAmt = td.hasAttribute('data-amt');
+    s.textContent = (d > 0 ? '▲ ' : '▼ ') + (isAmt ? fmtAmt(Math.abs(d)) : fmtPx(Math.abs(d)));
+    s.className = 'delta' + (isAmt ? '' : ' plain') + (d > 0 ? ' up' : ' down');
+    s.style.display = 'inline-block';
+  });
+})();
+// 顯示「這份資料是幾分鐘前抓的」。雲端排程會被 GitHub 跳過，光看產生時間不容易
+// 察覺已經停更很久，所以每 10 秒重算一次年齡：15 分鐘以上轉黃、40 分鐘以上轉紅。
+(function(){
+  var el = document.getElementById('age');
+  var wrap = document.querySelector('.wrap');
+  if(!el || !wrap) return;
+  var epoch = parseInt(wrap.getAttribute('data-epoch') || '0', 10);
+  if(!epoch) return;
+  // 莊家意圖卡跟資料年齡綁在一起：表格慢 15 分鐘還能看，方向判讀慢 15 分鐘
+  // 會害人做反，所以過期就整張轉灰、蓋上警語，不留一個看起來很篤定的結論。
+  var minds = [].slice.call(document.querySelectorAll('.mind'));
+  function tick(){
+    var sec = Math.max(0, Math.floor(Date.now()/1000) - epoch);
+    minds.forEach(function(m){ m.classList.toggle('expired', sec >= 900); });
+    var txt;
+    if(sec < 60)            txt = sec + ' 秒前';
+    else if(sec < 3600)     txt = Math.floor(sec/60) + ' 分鐘前';
+    else                    txt = Math.floor(sec/3600) + ' 小時 ' + Math.floor((sec%3600)/60) + ' 分前';
+    el.textContent = '資料 ' + txt;
+    el.className = sec >= 2400 ? 'dead' : (sec >= 900 ? 'stale' : '');
+  }
+  tick();
+  setInterval(tick, 10000);
+})();
+// 每 60 秒帶時間戳重新載入：繞過 iPhone 主畫面 App 與 CDN 的快取，永遠抓最新那版。
+setTimeout(function(){
+  location.replace(location.pathname + '?t=' + Date.now());
+}, 60000);
+</script>
+
+<script>
+/* 盤中多空空間卡：跟 Cloudflare Worker 要一份 KV 快照，在瀏覽器端算兩條線並畫圖。
+   為什麼放前端：掃全市場一輪 20 秒，本頁的請求扛不住（見 4.9 節註解）。
+   抓不到就整張卡不顯示 —— 頁面最上面留一個空框比沒有這張卡更糟。 */
+(function(){
+  var API  = 'https://duokong.emma198574.workers.dev/api/day';
+  var 快   = 6;      // 舊黃線：多空空間 − 前 6 根均值（只給沒有 tk 的舊資料）
+                     // 藍線＝Worker 回傳的 bmv（主力錢投票，−1~+1），不需要參數
+  var 全格 = 54;     // 09:00~13:30 共 54 格。x 軸永遠鋪滿一整天，
+                     // 盤中資料一根根長出來時比例才不會一直跳動。
+
+  var box = document.getElementById('dk'), cv = document.getElementById('dkcv');
+  if(!box || !cv) return;
+  var rows = [], 布局 = null;
+
+  function 色(k){ return getComputedStyle(document.documentElement).getPropertyValue(k).trim(); }
+  function 簽(v){ return (v > 0 ? '+' : '') + Math.round(v).toLocaleString('en-US'); }
+
+  /* 家數 − 前 k 根（含當根）移動平均。去趨勢後線講的是動能不是水位。 */
+  function 離均差(s, k){
+    return s.map(function(_, i){
+      var seg = s.slice(Math.max(0, i - k + 1), i + 1);
+      var m = 0; seg.forEach(function(v){ m += v; });
+      return s[i] - m / seg.length;
+    });
+  }
+
+  /* 藍線直接用 Worker 存好的 bmv（成交額前 100 大的買賣方向淨值）。
+     收盤 13:30 那一格沒有成交額增量、bmv 會是 null，畫線時要斷開不能當 0。 */
+  function 算三線(rs){
+    var s = rs.map(function(r){ return r.s; });
+    // 黃線 2026-11-01 起改用 Worker 的 tk（格內漲跌家數差）EMA(0.6)×0.7，
+    // 跟 盤中多空空間App/public/app.js 的 格內情緒() 同參數；舊資料沒有 tk 才退回離均差。
+    var 有tk = rs.length && rs.every(function(r){ return r.tk !== null && r.tk !== undefined; });
+    var e = null;
+    var f = 有tk ? rs.map(function(r){ e = (e === null) ? r.tk : 0.6 * r.tk + 0.4 * e; return e * 0.7; })
+                 : 離均差(s, 快);
+    rs.forEach(function(r, i){
+      r.y = Math.round(f[i]);
+      r.b = (r.bmv === null || r.bmv === undefined) ? null : r.bmv;
+    });
+    return rs;
+  }
+
+  function 錢簽(v){ return (v === null || v === undefined) ? '—' : (v > 0 ? '+' : '') + v.toFixed(2); }
+
+  /* 涵蓋率＝這一輪 MIS 回了幾筆 ÷ 掃描池。抓取失敗在 Worker 那邊是靜默的
+     （回空陣列、家數變小、線照畫），2026-09-07 盤中每格只掃到 55~130 檔卻毫無異狀，
+     兩天後對圖才發現。所以卡片一定要把涵蓋率講出來。
+     rt 是 2026-09-07 之後才存的，舊資料只能退回用有效家數估、門檻放寬。 */
+  function 算涵蓋(rs, day){
+    rs.forEach(function(r){
+      var 池 = r.pl || day.pool || 0;
+      r.舊 = (r.rt === null || r.rt === undefined);
+      r.cov = 池 ? (r.舊 ? r.n / 池 : r.rt / 池) : null;
+      r.缺 = (r.cov !== null) && (r.cov < (r.舊 ? 0.5 : 0.9));
+    });
+  }
+
+  function 畫(){
+    var dpr = window.devicePixelRatio || 1;
+    var W = cv.parentNode.clientWidth || 320, H = 152;
+    cv.width = W * dpr; cv.height = H * dpr;
+    var c = cv.getContext('2d'); c.setTransform(dpr, 0, 0, dpr, 0, 0);
+    c.clearRect(0, 0, W, H);
+    if(!rows.length) return;
+
+    var L = 36, R = 24, T = 8, B = 18, pw = W - L - R, ph = H - T - B;
+    var vals = [0];
+    rows.forEach(function(r){ vals.push(r.s, r.y); });   // 錢走右軸，不參與家數的軸範圍
+    var mx = Math.max.apply(null, vals), mn = Math.min.apply(null, vals);
+    var pad = (mx - mn) * 0.08 || 50; mx += pad; mn -= pad;
+    var step = pw / 全格;
+    var X = function(i){ return L + step * (i + 0.5); };
+    var Y = function(v){ return T + ph * (mx - v) / (mx - mn); };
+    布局 = { L: L, step: step, X: X };
+
+    c.strokeStyle = 色('--line'); c.lineWidth = 1;
+    [200, -200].forEach(function(v){
+      if(v > mx || v < mn) return;
+      c.setLineDash([4, 4]); c.beginPath();
+      c.moveTo(L, Y(v)); c.lineTo(W - R, Y(v)); c.stroke(); c.setLineDash([]);
+    });
+
+    var bw = Math.max(step * 0.62, 1.6);
+    rows.forEach(function(r, i){
+      c.globalAlpha = r.缺 ? 0.28 : 1;           // 殘值的格子畫淡，不要跟正常的混在一起
+      c.fillStyle = r.s >= 0 ? 色('--call') : 色('--put');
+      var y0 = Y(0), y1 = Y(r.s);
+      c.fillRect(X(i) - bw / 2, Math.min(y0, y1), bw, Math.max(Math.abs(y1 - y0), 1));
+    });
+    c.globalAlpha = 1;
+
+    c.strokeStyle = 色('--ink'); c.lineWidth = 1.2;
+    c.beginPath(); c.moveTo(L, Y(0)); c.lineTo(W - R, Y(0)); c.stroke();
+
+    c.strokeStyle = '#d8a13a'; c.lineWidth = 2; c.lineJoin = 'round'; c.beginPath();
+    rows.forEach(function(r, i){ i ? c.lineTo(X(i), Y(r.y)) : c.moveTo(X(i), Y(r.y)); });
+    c.stroke();
+
+    /* 藍線＝主力錢投票，−1~+1 的連續值，走右軸。
+       兩個軸的 0 刻意對齊：這樣「家數在零軸下、錢在零軸上」一眼就分得出來，
+       那正是這條線唯一比紅綠棒多講的東西。 */
+    var Y0 = Y(0);
+    var YB = function(v){
+      var u = Math.max(-1, Math.min(1, v));
+      return u >= 0 ? Y0 - (Y0 - T) * u : Y0 + (T + ph - Y0) * (-u);
+    };
+    c.strokeStyle = '#4a8fe0'; c.lineWidth = 2.4; c.lineJoin = 'round'; c.beginPath();
+    var 斷 = true;
+    rows.forEach(function(r, i){
+      if(r.b === null){ 斷 = true; return; }       // 收盤那格沒有 bmv，斷開別接成假的直線
+      var yy = YB(r.b);
+      斷 ? c.moveTo(X(i), yy) : c.lineTo(X(i), yy);
+      斷 = false;
+    });
+    c.stroke();
+
+    c.fillStyle = 色('--muted'); c.font = '10px -apple-system'; c.textAlign = 'right';
+    [mx, 0, mn].forEach(function(v){ c.fillText(Math.round(v), L - 5, Y(v) + 3); });
+    /* 右軸只標 +1／0／−1 三格：卡片高度只有 152px，標多了反而看不清楚 */
+    c.fillStyle = '#4a8fe0'; c.textAlign = 'left';
+    [[1, '+1'], [0, '0'], [-1, '-1']].forEach(function(z){
+      c.fillText(z[1], W - R + 3, YB(z[0]) + 3);
+    });
+    c.fillStyle = 色('--muted'); c.textAlign = 'center';
+    for(var m = 540, i = 0; m <= 805; m += 5, i++){
+      if(i % 6) continue;
+      var lab = ('0' + Math.floor(m / 60)).slice(-2) + ':' + ('0' + (m % 60)).slice(-2);
+      c.fillText(lab, L + step * (i + 0.5), H - 5);
+    }
+  }
+
+  function 台北日(){
+    var t = new Date(Date.now() + (new Date().getTimezoneOffset() * 60000) + 8 * 3600000);
+    return '' + t.getFullYear() + ('0' + (t.getMonth() + 1)).slice(-2) + ('0' + t.getDate()).slice(-2);
+  }
+
+  function 渲染(day){
+    rows = 算三線((day && day.rows) || []);
+    if(!rows.length) return;                    // 開盤前／連假：整張卡不出現
+    算涵蓋(rows, day || {});
+    box.hidden = false;
+
+    var 末 = rows[rows.length - 1];
+    /* 收盤 13:30 那一格沒有成交額增量、bmv 是 null，KPI 要往回找最後一個有值的，
+       否則收盤後整晚看到的都是「主力錢 —」。 */
+    var 末錢 = null;
+    for(var k = rows.length - 1; k >= 0; k--){ if(rows[k].b !== null){ 末錢 = rows[k].b; break; } }
+    box.className = 'dk ' + (末.s >= 0 ? 'up' : 'down');
+    document.getElementById('dkq').textContent = 簽(末.s);
+
+    var d = day.date || '';
+    var 當天 = (d === 台北日());
+    document.getElementById('dkd').textContent =
+      d.slice(4, 6) + '/' + d.slice(6) + ' ' + (末.t || '') +
+      (day.updated ? '（更新 ' + day.updated + '）' : '') +
+      (當天 ? '' : '　最近交易日');
+
+    var hi = 0, lo = 0, 紅 = 0, 綠 = 0;
+    rows.forEach(function(r, i){
+      if(r.s > rows[hi].s) hi = i;
+      if(r.s < rows[lo].s) lo = i;
+      if(r.s > 0) 紅++; else if(r.s < 0) 綠++;
+    });
+    var 缺數 = 0;
+    rows.forEach(function(r){ if(r.缺) 缺數++; });
+    var 警 = 缺數 > rows.length * 0.2
+      ? '<b style="color:#d1544f">⚠ ' + 缺數 + '/' + rows.length +
+        ' 格沒掃完整，家數偏小、線失真，別照這張判讀</b>　' : '';
+    document.getElementById('dkfact').innerHTML = 警 +
+      '日內最強 <b>' + rows[hi].t + ' ' + 簽(rows[hi].s) + '</b>　最弱 <b>' + rows[lo].t + ' ' +
+      簽(rows[lo].s) + '</b>　紅棒 <b>' + 紅 + '</b> 根／綠棒 <b>' + 綠 + '</b> 根　掃描池 ' +
+      (day.pool || '?') + ' 檔' +
+      (末.cov !== null && 末.cov !== undefined
+        ? '　本格涵蓋 <b>' + Math.round(末.cov * 100) + '%</b>' : '');
+
+    function 格(k, v, cls){
+      return '<div class="dks"><span class="l">' + k + '</span><b class="' + (cls || '') +
+             '">' + v + '</b></div>';
+    }
+    document.getElementById('dkkpi').innerHTML =
+      格('多空空間', 簽(末.s), 末.s >= 0 ? 'up' : 'down') +
+      格('上漲 / 下跌', 末.up + ' / ' + 末.dn, 'dim') +
+      格('快動能', 簽(末.y), 末.y >= 0 ? 'up' : 'down') +
+      格('主力錢', 錢簽(末錢), (末錢 || 0) >= 0 ? 'up' : 'down') +
+      格('這 5 分成交', (末.amt || 0).toLocaleString('en-US') + ' 億', 'dim');
+
+    畫();
+  }
+
+  /* 點圖看某一根的數字。手機上沒有 hover，點擊是唯一能讀出單根數值的方式。 */
+  cv.addEventListener('click', function(e){
+    if(!布局 || !rows.length) return;
+    var r = cv.getBoundingClientRect();
+    var i = Math.round((e.clientX - r.left - 布局.L) / 布局.step - 0.5);
+    var row = rows[i];
+    if(!row) return;
+    document.getElementById('dkfact').innerHTML =
+      '<b>' + row.t + '</b>　多空空間 <b>' + 簽(row.s) + '</b>（漲 ' + row.up + ' / 跌 ' + row.dn +
+      '）　快動能 <b>' + 簽(row.y) + '</b>　主力錢 <b>' + 錢簽(row.b) + '</b>　這 5 分 ' +
+      (row.amt || 0).toLocaleString('en-US') + ' 億' +
+      (row.cov !== null && row.cov !== undefined
+        ? '　涵蓋 ' + Math.round(row.cov * 100) + '%' + (row.缺 ? '（這格不可信）' : '') : '');
+  });
+
+  function 載入(){
+    fetch(API, { cache: 'no-store' })
+      .then(function(r){ return r.json(); })
+      .then(渲染)
+      .catch(function(){});                     // 讀不到就維持隱藏，不影響選擇權主表
+  }
+
+  載入();
+  /* 本頁 60 秒會整頁重整，但使用者常常把頁面切到背景，重整不一定準時發生；
+     卡片自己也每 60 秒重抓一次，圖才會真的自己往前長。 */
+  setInterval(載入, 60000);
+  window.addEventListener('resize', 畫);
+})();
+</script>
