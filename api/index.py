@@ -22,6 +22,7 @@ Vercel serverless function：打開網址當場抓報價、當場產 T 字報價
   /dual   雙市場外框：摘要列＋台指／那斯達克兩個分頁（雙市場摘要.py）
   /mnq    小那期貨報價 JSON，給 /dual 的摘要列輪詢
   /mis    MIS 報價轉抓（白名單），給三卡警報 Worker 被 520 擋時當備援
+  /def    防守點位 JSON（?exp=YYYYMMDD,…），給三卡警報 Worker 的爆量推播附防守
   /v2     台指 T 字新版試用（防守、ΔOI、合計列）；不用了就刪這個分支與 _新版.py
 / 與 /ndx 的頁尾都會多一段摘要 JSON（看不到，給 /dual 讀）。
 """
@@ -167,6 +168,16 @@ class handler(BaseHTTPRequestHandler):
                 html_out = json.dumps({"err": "參數不在白名單"}, ensure_ascii=False)
             else:
                 html_out = _mis_proxy(mkt, typ, cid)
+        elif path == "/def":
+            # 給三卡警報 Worker 的爆量推播附防守點位（2026-11-21 加）。
+            # Worker 沒有收盤檔（太重），這裡算好回 JSON；Worker 只在偵測到爆量時才打，平常不打。
+            ctype = "application/json; charset=utf-8"
+            exps = [e for e in q.get("exp", [""])[0].split(",") if len(e) == 8 and e.isdigit()][:5]
+            try:
+                d = _load().defense_table(exps)
+            except Exception as e:
+                d = {"err": str(e)}
+            html_out = json.dumps(d, ensure_ascii=False)
         elif path == "/v2":
             try:
                 radius = int(q.get("radius", ["1500"])[0])

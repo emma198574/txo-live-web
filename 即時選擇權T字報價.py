@@ -531,6 +531,46 @@ def fetch_prev_oi(expiry, mon):
     return None
 
 
+def day_basis(oi):
+    """
+    防守用的「日盤價差」＝ 台指期日盤收盤 − 本到期別日盤合成期貨（跟 /v2 同一套，見 _新版.py 註解）。
+    合成期貨用結算價推（收盤價常陳舊），取台指期 ±800 點內「履約 + 買權 − 賣權」的中位數。
+    回傳 (價差, 合成期貨, 台指期收盤)；缺資料時前兩個是 None。
+    """
+    dtxf = oi.get("txf") if oi else None
+    if dtxf and oi.get("CS"):
+        syn = sorted(k + oi["CS"][k] - oi["PS"][k] for k in oi["CS"]
+                     if abs(k - dtxf) <= 800 and oi["CS"].get(k) and oi["PS"].get(k))
+        if len(syn) >= 3:
+            dsyn = syn[len(syn) // 2]
+            return dtxf - dsyn, dsyn, dtxf
+    return None, None, dtxf
+
+
+def defense_table(expiries):
+    """
+    給三卡警報 Worker 的爆量推播附「防守（期貨點位）」用（2026-11-21 加，Vercel /def 端點）。
+    防守＝買權 履約＋日盤收盤權利金＋價差；賣權 履約−權利金＋價差。一天一換，夜盤不跳。
+    expiries：契約到期日 YYYYMMDD 清單。回傳 {"date", "txf", "exp": {到期: {"basis", "C": {k: 防守}, "P": {...}}}}。
+    """
+    load_oi_buckets(wait=True)          # Vercel 冷啟動時快取是空的，這裡要等收盤檔下載完
+    out = {"date": None, "txf": None, "exp": {}}
+    for exp in expiries:
+        oi = fetch_prev_oi(exp, int(exp[4:6]))
+        if not oi or not oi.get("exact"):
+            continue
+        basis, _, txf = day_basis(oi)
+        out["date"], out["txf"] = f'{oi["date"]:%Y-%m-%d}', txf
+        if basis is None:
+            continue
+        out["exp"][exp] = {
+            "basis": round(basis),
+            "C": {str(k): round(k + px + basis) for k, px in oi["CX"].items() if px},
+            "P": {str(k): round(k - px + basis) for k, px in oi["PX"].items() if px},
+        }
+    return out
+
+
 # ── 4. 組報告資料 ─────────────────────────────────────────────────────────────
 
 def group_fwd(grp):
@@ -846,14 +886,7 @@ def build_report(gkey, grp, session, under, usrc, tab_id, tab_name, radius=1500)
 
     # 防守用的「日盤價差」＝ 台指期日盤收盤 − 本到期別日盤合成期貨（跟 /v2 同一套，見 _新版.py 註解）。
     # 合成期貨用結算價推（收盤價常陳舊），取台指期 ±800 點內「履約 + 買權 − 賣權」的中位數。
-    dbasis = dsyn = None
-    dtxf = oi.get("txf") if oi else None
-    if dtxf and oi.get("CS"):
-        syn = sorted(k + oi["CS"][k] - oi["PS"][k] for k in oi["CS"]
-                     if abs(k - dtxf) <= 800 and oi["CS"].get(k) and oi["PS"].get(k))
-        if len(syn) >= 3:
-            dsyn = syn[len(syn) // 2]
-            dbasis = dtxf - dsyn
+    dbasis, dsyn, dtxf = day_basis(oi)
 
     lo, hi = under - radius, under + radius
     strikes = sorted(k for k in set(calls) | set(puts) if lo <= k <= hi)
@@ -880,8 +913,12 @@ def build_report(gkey, grp, session, under, usrc, tab_id, tab_name, radius=1500)
     # 免得像 07/31 早上那次：產生時間是今天早上、行情時間卻是昨晚而看不出來。
     t, dt = grp["time"], grp["date"]
     tstr = f"{t[:2]}:{t[2:4]}:{t[4:6]}" if len(t) == 6 else "-"
-    today = datetime.now(TW_TZ).strftime("%Y%m%d")
-    stale = bool(dt) and dt != today
+    now_ = datetime.now(TW_TZ)
+    today = now_.strftime("%Y%m%d")
+    # 夜盤過午夜 MIS 的 CDate 不換日（仍是前一天），00:00~08:00 要容許前一天，
+    # 否則凌晨整段被當成非今日行情（2026-11-21 踩到，與 Worker 盤別日 對齊）
+    prev_ = (now_ - timedelta(days=1)).strftime("%Y%m%d") if now_.hour < 8 else today
+    stale = bool(dt) and dt not in (today, prev_)
     if stale:
         tstr = f"{dt[4:6]}/{dt[6:8]} {tstr}"
 
